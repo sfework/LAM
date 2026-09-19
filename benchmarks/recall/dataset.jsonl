@@ -1,0 +1,20 @@
+{"id":"q-dep","query":"我们项目用什么包管理器？","expect_refs":["dep-mgr"],"expect_any":["pnpm"],"kind_hint":"instruction"}
+{"id":"q-db","query":"数据库是用什么模块访问的？","expect_refs":["db-module"],"expect_any":["node:sqlite"],"kind_hint":"fact"}
+{"id":"q-vec","query":"向量维度是多少？","expect_refs":["vec-dim"],"expect_any":["1024"],"kind_hint":"fact"}
+{"id":"q-layer","query":"记忆分了哪几层？","expect_refs":["layering"],"expect_any":["L0","L1","L2"],"kind_hint":"fact"}
+{"id":"q-searchlimit","query":"记忆检索工具每轮最多能查几次？","expect_refs":["recall-limit"],"expect_any":["3"],"kind_hint":"instruction"}
+{"id":"q-auth","query":"这个项目有没有做鉴权和团队权限？","expect_refs":["no-auth"],"expect_any":["无鉴权","localhost"],"kind_hint":"fact"}
+{"id":"q-config","query":"配置是写在文件里还是数据库里？","expect_refs":["config-db"],"expect_any":["DB","配置文件"],"kind_hint":"instruction"}
+{"id":"q-cg","query":"CodeGraph 的索引数据放在哪里？","expect_refs":["cg-external"],"expect_any":["DATA_DIR","外置"],"kind_hint":"fact"}
+{"id":"q-node","query":"运行需要什么 Node 版本？","expect_refs":["ts-version"],"expect_any":["24"],"kind_hint":"fact"}
+{"id":"q-del","query":"删除项目会发生什么？","expect_refs":["soft-delete"],"expect_any":["软删","恢复"],"kind_hint":"fact"}
+{"id":"q-rrf","query":"混合检索是怎么合并结果的？","expect_refs":["rrf-k"],"expect_any":["RRF","60"],"kind_hint":"fact"}
+{"id":"q-model","query":"网关转发用哪个模型，客户端传的 model 生效吗？","expect_refs":["gateway-model"],"expect_any":["gateway_llm","忽略"],"kind_hint":"instruction"}
+{"id":"q-denoise","query":"除噪的转发和记忆是一条通道吗？","expect_refs":["denoise-both"],"expect_any":["独立"],"kind_hint":"fact"}
+{"id":"q-log","query":"日志用什么库，路径怎么组织的？","expect_refs":["pino-log"],"expect_any":["pino","Logs"],"kind_hint":"fact"}
+{"id":"q-fe","query":"前端和后端跨域吗？","expect_refs":["frontend-same-origin"],"expect_any":["同域","无跨域"],"kind_hint":"fact"}
+{"id":"q-para-emb","query":"嵌入向量的长度定在多少？","expect_refs":["vec-dim"],"expect_any":["1024"],"kind_hint":"fact"}
+{"id":"q-para-install","query":"装第三方库用哪个工具比较好？","expect_refs":["dep-mgr"],"expect_any":["pnpm"],"kind_hint":"instruction"}
+{"id":"q-para-port","query":"这个服务默认监听在哪个网络地址上？","expect_refs":["no-auth"],"expect_any":["localhost"],"kind_hint":"fact"}
+{"id":"q-para-store","query":"图谱数据能不能塞进被分析的那个仓库目录里？","expect_refs":["cg-external"],"expect_any":["禁止","外置",".codegraph"],"kind_hint":"fact"}
+{"id":"q-neg","query":"今天天气怎么样？","expect_refs":[],"expect_any":[],"kind_hint":"none"}

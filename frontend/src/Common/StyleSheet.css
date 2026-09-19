@@ -1,0 +1,376 @@
+/* 全局 */
+body,
+html,
+#root {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+}
+
+#root {
+    background: rgba(var(--semi-grey-1), 1);
+}
+
+/* 全局滚动条 */
+::-webkit-scrollbar {
+    width: 14px;
+    height: 14px;
+}
+
+::-webkit-scrollbar-track {
+    background: rgba(var(--semi-grey-0), 1);
+    border-radius: 0;
+}
+
+::-webkit-scrollbar-thumb {
+    background-color: rgba(var(--semi-grey-1), .8);
+    border-radius: 6px;
+    border: 2px solid rgba(var(--semi-grey-1), 1);
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(var(--semi-grey-0), 1);
+}
+
+/* 整体布局 */
+.BodyPage {
+    height: 100%;
+    width: 100%;
+    display: flex;
+}
+
+.BodyPage .semi-layout-sider,
+.BodyPage .semi-layout-sider-children,
+.BodyPage .semi-navigation,
+.BodyPage .semi-navigation-inner {
+    height: 100%;
+}
+
+.BodyPage .semi-navigation-inner {
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.BodyPage .semi-navigation-header-list-outer {
+    height: unset !important;
+    margin-bottom: 10px;
+}
+
+.Content {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+}
+
+.Content>.ContentHeader {
+    height: 46px;
+    background: rgba(var(--semi-grey-0), 1);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    justify-content: space-between;
+    box-shadow: 0 4px 2px #2e3238;
+}
+
+.Content>.ContentBody {
+    flex: 1;
+    overflow: hidden;
+}
+
+/* 删除确认框 */
+.ConfirmDelete>.semi-popconfirm-inner {
+    flex-direction: row;
+    align-items: center;
+    padding: 0 !important;
+}
+
+.ConfirmDelete>.semi-popconfirm-inner>.semi-popconfirm-header>.semi-popconfirm-header-body,
+.ConfirmDelete>.semi-popconfirm-inner>.semi-popconfirm-header>.semi-button-tertiary,
+.ConfirmDelete>.semi-popconfirm-inner>.semi-popconfirm-footer>.semi-button-tertiary {
+    display: none;
+}
+
+.ConfirmDelete>.semi-popconfirm-inner>.semi-popconfirm-body {
+    margin-left: 0;
+}
+
+.ConfirmDelete>.semi-popconfirm-inner>.semi-popconfirm-footer {
+    margin-top: 0;
+}
+
+.ConfirmDelete>.semi-popconfirm-inner>.semi-popconfirm-footer>.semi-button {
+    margin-left: 10px;
+}
+
+/* 内容页 / 表格页 */
+.ContentPage {
+    padding: 16px;
+    height: 100%;
+    box-sizing: border-box;
+    overflow: auto;
+    color: var(--semi-color-text-0);
+    background: rgba(var(--semi-grey-1), 1);
+    scroll-behavior: smooth;
+}
+
+.ContentPage.loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.TablePage {
+    padding: 16px;
+    display: flex;
+    align-items: flex-start;
+    flex-direction: column;
+    height: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+    color: var(--semi-color-text-0);
+    background: rgba(var(--semi-grey-1), 1);
+}
+
+.TablePage.simple {
+    padding: 0;
+}
+
+.searchBox {
+    width: 100%;
+    margin-bottom: 6px;
+}
+
+.searchBox .semi-form-field {
+    margin-bottom: 0;
+    padding-bottom: 0 !important;
+}
+
+.semi-form.semi-form-horizontal>.right {
+    margin-left: auto;
+}
+
+/* 分裂按钮 */
+.semi-button-split {
+    display: flex !important;
+}
+
+.semi-button-split .semi-button.ClearRound {
+    border-top-left-radius: 0 !important;
+    border-bottom-left-radius: 0 !important;
+}
+
+/* 弹窗底部按钮布局 */
+.method-flex {
+    justify-content: space-between;
+    display: flex;
+}
+
+.method-flex>:first-child {
+    width: 50%;
+    text-align: left;
+    display: flex;
+}
+
+.method-flex>:first-child button:first-child {
+    margin-left: 0;
+}
+
+.method-flex>:first-child>:first-child {
+    margin-right: 12px;
+}
+
+.method-flex>:last-child {
+    width: 50%;
+    text-align: right;
+}
+
+/* 表格 */
+.semi-table-body {
+    scroll-behavior: smooth;
+    overflow-y: scroll;
+}
+
+.table_list {
+    flex: 1;
+    overflow-x: hidden;
+    overflow-y: auto;
+    width: 100%;
+}
+
+/* 日志页：仿 Windows 资源管理器（中等图标）平铺网格，块宽固定 70px，列数随容器宽度自适应 */
+.logGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, 70px);
+    gap: 8px;
+    padding: 4px 0 16px;
+    width: 100%;
+}
+
+.logTile {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 16px 8px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    background: var(--semi-color-fill-0);
+    transition: background-color 0.15s ease;
+}
+
+.logTile:hover {
+    background: var(--semi-color-fill-1);
+}
+
+.logTile .logTileIcon {
+    font-size: 40px;
+    color: var(--semi-color-text-1);
+}
+
+.logTile .logTileName {
+    width: 100%;
+    text-align: center;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--semi-color-text-0);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.logTile .logTileDelete {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.logTile:hover .logTileDelete {
+    opacity: 1;
+}
+
+/* CodeGraph 页：关系图画布（撑满剩余高度，SVG 自适应） */
+.cgCanvas {
+    position: relative;
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+    border: 1px solid var(--semi-color-border);
+    border-radius: 4px;
+    background: var(--semi-color-bg-0);
+    overflow: hidden;
+    margin-top: 10px;
+}
+
+.cgCanvas .cgHint {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: var(--semi-color-text-2);
+    font-size: 13px;
+    white-space: pre-wrap;
+    text-align: center;
+}
+
+.table_list button {
+    background-color: rgb(62 63 67) !important;
+    background: rgb(62 63 67) !important;
+}
+
+.pagination {
+    margin-top: 14px;
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+}
+
+/* 记忆库页：项目栏 + 三页签（L0/L1/L2），页签面板撑满、内部 flex 列布局 */
+.memPage {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 16px;
+    overflow: hidden;
+    background: rgba(var(--semi-grey-1), 1);
+}
+
+.memTabs {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.memTabs .semi-tabs-bar {
+    flex: none;
+    margin-bottom: 10px;
+}
+
+.memTabs .semi-tabs-bar .semi-tabs-extra-content {
+    display: flex;
+    align-items: center;
+}
+
+.memTabs .semi-tabs-content {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.memTabs .semi-tabs-pane {
+    height: 100%;
+}
+.memTabs .semi-tabs-pane>.semi-tabs-pane-motion-overlay{
+height: 100%;
+}
+
+.memL2 {
+    height: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+}
+.memL2>button{
+    position: absolute;
+    top: 10;
+    right: 10;
+    z-index: 1;
+}
+
+.semi-table-header::-webkit-scrollbar-track {
+    background-color: var(--semi-color-bg-1);
+    border-bottom: 2px solid var(--semi-color-border);
+}
+
+/* 表单字段间距与错误信息定位 */
+.semi-form .semi-form-field {
+    padding-top: 0 !important;
+    padding-bottom: 18px !important;
+}
+
+.semi-form .semi-form-field-main {
+    position: relative;
+}
+
+.semi-form .semi-form-field-error-message {
+    position: absolute;
+    z-index: 999;
+    bottom: -19px;
+    font-size: 12px;
+}
+
+.semi-form .semi-form-field-error-message>span {
+    margin-right: 2px;
+    top: 3px;
+}
+
+.semi-form .semi-form-field-error-message>span>svg {
+    height: 12px;
+    width: 12px;
+}

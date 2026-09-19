@@ -1,0 +1,11 @@
+node_modules/
+dist/
+data/
+Logs/
+tools/
+*.log
+.env
+.DS_Store
+docs/
+# vendored codegraph 库（第三方源码 + 本地补丁，随本仓库发布；见 codegraph/.upstream）
+# 注意：不再排除 codegraph/ 本身，但其 node_modules/dist 等仍被上方通配规则忽略

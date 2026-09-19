@@ -1,0 +1,15 @@
+upstream: https://github.com/colbymchenry/codegraph
+upstream-commit: ba3c21e
+vendored: 2026-09
+license: MIT (see LICENSE, Copyright (c) 2026 Colby Mchenry)
+
+local patches:
+  - src/directory.ts: getCodeGraphDir(projectRoot) honors CODEGRAPH_STORE_ROOT env,
+    relocating each project's index to {STORE_ROOT}/{basename}-{sha256(root)[0:8]}
+    instead of <projectRoot>/.codegraph (index fully externalized; zero pollution
+    of scanned repos; avoids Windows watcher EBUSY on own data dir). See LAM DESIGN 决策 67.
+  - removed codegraph-kernel/ (Rust kernel sources, unused: LAM runs the pure-WASM path).
+
+build: from LAM repo root run `pnpm build:cg` (scripts/build-codegraph.mjs:
+tsc in codegraph/ + copy schema.sql / *.wasm assets to codegraph/dist).
+library deps: run `npm install` inside codegraph/ (its package-lock.json is not vendored).
