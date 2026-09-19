@@ -46,7 +46,9 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   { key: "l1_recall_enabled", type: "bool", defaultValue: "true", description: "每轮 L1 动态召回开关" },
   { key: "l1_recall_top_k", type: "int", defaultValue: "5", min: 1, max: 50, description: "每轮召回条数上限" },
   { key: "l1_recall_max_chars", type: "int", defaultValue: "1500", min: 0, max: 20000, description: "召回块字符上限" },
+  { key: "l1_recall_max_chars_per_item", type: "int", defaultValue: "200", min: 0, max: 2000, description: "单条召回行字符上限，超长截断保留头部（0=不限制）" },
   { key: "recall_timeout_ms", type: "int", defaultValue: "5000", min: 500, max: 30000, description: "召回超时，超时降级空召回不阻塞转发" },
+  { key: "l1_recall_similarity_min", type: "float", defaultValue: "0.3", min: 0, max: 1, description: "向量命中的余弦相似度下限（1-distance），低于此丢弃；与文档集大小无关，可靠过滤噪音召回" },
 
   // ── 提取调度 ──
   { key: "l1_trigger_conversations", type: "int", defaultValue: "5", min: 1, max: 100, description: "触发 L1 提取的累积轮数" },

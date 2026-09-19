@@ -1,5 +1,6 @@
 import { messageText } from "../gateway/protocol.js";
 import { stripInjectionTags } from "./sanitize.js";
+import { hasMeaningfulQuery } from "./tokenize.js";
 import type { L1Store } from "./l1-store.js";
 import type { SettingsService } from "../settings/service.js";
 import { embedText, type EmbeddingConfig } from "./embedding.js";
@@ -57,6 +58,9 @@ export class MemoryRecaller {
     if (!this.settings.getBool("l1_recall_enabled")) return { block: "", count: 0 };
     const query = cleanQueryText(lastUserContent);
     if (!query) return { block: "", count: 0 };
+    // 低信息量短路：剥离停用词后无有效检索 token（"好的""是啊"等寒暄），
+    // 直接跳过 BM25 与向量检索，避免无意义召回注入噪音。
+    if (!hasMeaningfulQuery(query)) return { block: "", count: 0 };
 
     const timeoutMs = this.settings.getInt("recall_timeout_ms");
     const topK = this.settings.getInt("l1_recall_top_k");
@@ -67,7 +71,14 @@ export class MemoryRecaller {
         timeoutMs,
       );
       if (!hits.length) return { block: "", count: 0 };
-      return { block: renderBlock(hits, this.settings.getInt("l1_recall_max_chars")), count: hits.length };
+      return {
+        block: renderBlock(
+          hits,
+          this.settings.getInt("l1_recall_max_chars"),
+          this.settings.getInt("l1_recall_max_chars_per_item"),
+        ),
+        count: hits.length,
+      };
     } catch (err) {
       log.warn({ projectId, err: String(err) }, "召回超时/失败，降级为空召回");
       return { block: "", count: 0 };
@@ -96,7 +107,8 @@ export class MemoryRecaller {
         log.warn({ err: String(err) }, "查询向量化失败，降级 BM25");
       }
     }
-    return this.store.searchHybrid(projectId, query, queryVec, topK);
+    const simMin = this.settings.getFloat("l1_recall_similarity_min");
+    return this.store.searchHybrid(projectId, query, queryVec, topK, simMin);
   }
 
   private embeddingConfig(): EmbeddingConfig | null {
@@ -106,21 +118,46 @@ export class MemoryRecaller {
   }
 }
 
+/** 截断标记与"部分塞入"的最小可用长度（低于此宁可整条丢弃，避免塞入无意义碎片）。 */
+const TRUNCATION_SUFFIX = "…";
+const MIN_PARTIAL_LINE_CHARS = 40;
+
+/** 按 code point 截断（非 UTF-16 单元），避免把代理对截半产生 U+FFFD。 */
+function truncateLine(line: string, maxChars: number): string {
+  const cps = Array.from(line);
+  if (cps.length <= maxChars) return line;
+  if (maxChars <= TRUNCATION_SUFFIX.length) return cps.slice(0, maxChars).join("");
+  return cps.slice(0, maxChars - TRUNCATION_SUFFIX.length).join("").trimEnd() + TRUNCATION_SUFFIX;
+}
+
+/**
+ * 渲染召回块，两级预算（参考 tdai applyRecallBudget）：
+ *  1. 逐条：单行超 maxPerItem 则截断保留头部（0=不限制）；
+ *  2. 总体：剩余预算放不下整行时，若剩余 ≥ MIN_PARTIAL_LINE_CHARS 则截半条塞入，
+ *     否则整条丢弃并追加截断提示。首行始终保留（不受总预算限制）。
+ */
 function renderBlock(
   hits: { record: { kind: string; content: string }; score: number }[],
   maxChars: number,
+  maxPerItem: number,
 ): string {
   const lines = [`<recalled>`, DISCLAIMER];
   let used = lines.join("\n").length;
   let n = 0;
   for (const h of hits) {
-    const line = `${n + 1}. [${h.record.kind} score=${h.score.toFixed(3)}] ${h.record.content}`;
-    if (n > 0 && used + line.length > maxChars) {
+    let line = `${n + 1}. [${h.record.kind} score=${h.score.toFixed(3)}] ${h.record.content}`;
+    if (maxPerItem > 0) line = truncateLine(line, maxPerItem);
+    const sep = n > 0 ? 1 : 0; // 行分隔符 \n 占用
+    if (n > 0 && used + sep + line.length > maxChars) {
+      const remaining = maxChars - used - sep;
+      if (remaining >= MIN_PARTIAL_LINE_CHARS) {
+        lines.push(truncateLine(line, remaining));
+      }
       lines.push("…（已截断，可用 memory_search 查看更多）");
       break;
     }
     lines.push(line);
-    used += line.length + 1;
+    used += sep + line.length;
     n++;
   }
   lines.push(`</recalled>`);

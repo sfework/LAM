@@ -243,21 +243,29 @@ export class L1Store {
   /**
    * RRF 混合检索（FTS BM25 + 向量，k=60）。
    * queryVec 为空或未启用向量时退化为纯 BM25。
+   *
+   * 相关度阈值（仅召回路径，不影响 store.search 供冲突检测使用）：
+   *  - 向量命中按余弦相似度 1-distance 过滤（simMin），与文档集大小无关，可靠。
+   * BM25 不设绝对阈值：bigram + 小文档集下 -bm25 分数不可靠（IDF 趋 0 虚低），
+   * 绝对阈值会造成假阴性；低信息量输入由召回侧停用词短路拦截。
+   * 传 0（默认）表示不过滤，由调用方（召回侧）读取设置传入。
    */
   searchHybrid(
     projectId: string,
     query: string,
     queryVec: Float32Array | null,
     limit: number,
+    simMin = 0,
   ): { record: L1Record; score: number }[] {
     const fetch = Math.max(limit * 2, 10);
     const ftsHits = this.search(projectId, query, fetch);
     if (!queryVec || !this.vecAvailable) return ftsHits.slice(0, limit);
 
     const vecHits = this.searchVector(projectId, queryVec, fetch);
-    // 向量命中的 id → record（get 过滤软删/superseded）
+    // 向量命中的 id → record（get 过滤软删/superseded），并按余弦相似度阈值过滤
     const vecRecords: { record: L1Record; rank: number }[] = [];
     for (const h of vecHits) {
+      if (1 - h.distance < simMin) continue;
       const rec = this.get(h.id);
       if (rec && rec.supersededBy === null && rec.deletedAt === null) vecRecords.push({ record: rec, rank: vecRecords.length });
     }

@@ -219,4 +219,47 @@ describe("MemoryRecaller", () => {
     const { block } = await recaller.recall(ctx.projectId, "记忆 条目 编号");
     expect(block).toContain("已截断");
   });
+
+  it("纯寒暄输入（好的）经停用词短路，不产生召回", async () => {
+    const ctx = fresh(false);
+    // 库中存在含"好的"的记忆，若不短路则 BM25 会命中并注入噪音
+    ctx.store.insert(ctx.projectId, mk("用户说好的表示同意"));
+    const recaller = new MemoryRecaller(ctx.store, ctx.settings);
+    expect((await recaller.recall(ctx.projectId, "好的")).count).toBe(0);
+    expect((await recaller.recall(ctx.projectId, "好的")).block).toBe("");
+  });
+
+  it("含实义词的指令（按此执行）不被停用词误杀", async () => {
+    const ctx = fresh(false);
+    ctx.store.insert(ctx.projectId, mk("执行部署脚本前先跑测试"));
+    const recaller = new MemoryRecaller(ctx.store, ctx.settings);
+    // "执行"为实义 bigram，应正常检索命中
+    expect((await recaller.recall(ctx.projectId, "按此执行")).count).toBeGreaterThan(0);
+  });
+
+  it("单条超 per-item 上限时逐条截断保留头部", async () => {
+    const ctx = fresh(false);
+    ctx.store.insert(ctx.projectId, mk("记忆甲" + "长".repeat(300)));
+    ctx.settings.set("l1_recall_max_chars_per_item", "50");
+    const recaller = new MemoryRecaller(ctx.store, ctx.settings);
+    const { block } = await recaller.recall(ctx.projectId, "记忆甲");
+    const itemLine = block.split("\n").find((l) => l.includes("记忆甲"));
+    expect(itemLine).toBeDefined();
+    expect([...(itemLine ?? "")].length).toBeLessThanOrEqual(50);
+    expect(itemLine).toContain("…");
+  });
+
+  it("总预算剩余足够时截半条塞入而非整条丢弃", async () => {
+    const ctx = fresh(false);
+    ctx.store.insert(ctx.projectId, mk("编号零 内容", "fact", 90));
+    ctx.store.insert(ctx.projectId, mk("编号一 内容较长" + "字".repeat(100)));
+    ctx.settings.set("l1_recall_max_chars_per_item", "0"); // 只考察总预算
+    // 预算：头部两行 + 第一条 + 第二条放不下整行但够半条（≥40）
+    ctx.settings.set("l1_recall_max_chars", "180");
+    const recaller = new MemoryRecaller(ctx.store, ctx.settings);
+    const { block } = await recaller.recall(ctx.projectId, "编号 内容");
+    expect(block).toContain("已截断");
+    // 第二条以截断形式部分出现（含"编号一"头部），而非直接消失
+    expect(block).toContain("编号一");
+  });
 });
