@@ -40,6 +40,8 @@
 
 以 vendored 的 [codegraph](https://github.com/colbymchenry/codegraph) 解析引擎为库，把项目源码索引成符号 + 调用关系图（索引统一存 `data/codegraph/`，目标仓库零污染）。每轮对话后按计数增量 sync；8 个 MCP 查询工具（search / explore / callers / callees / impact / node / status / files）支撑「改这个函数会波及谁」类问题；管理台内力导向关系图可视化。
 
+![CodeGraph 关系图（管理台）](assets/codegraph-view.png)
+
 ### SQL 只读查询
 
 让接入的 Agent 直接探查外部业务库（SQLite / PostgreSQL / MySQL / SQL Server 四方言 × 查询/列表/看表结构共 12 工具）：仅放行单条 SELECT/WITH，注释剥离 + 词边界黑名单防绕过，SQLite 只读打开，行数上限截断，失败原因以正常结果返回供模型自我修正。
