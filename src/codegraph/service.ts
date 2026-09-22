@@ -55,7 +55,7 @@ export class CodeGraphService {
     this.activated.add(projectId);
     this.status.ensure(projectId);
     this.enqueue({ projectId, root: path, force: false });
-    log.info({ projectId, path }, "CodeGraph 项目已激活（排队首建）");
+    log.debug({ projectId, path }, "CodeGraph 项目已激活（排队首建）");
   }
 
   /**
@@ -69,7 +69,7 @@ export class CodeGraphService {
     if (!this.status.bumpTurn(projectId, every)) return;
     this.activated.add(projectId);
     this.enqueue({ projectId, root: path, force: false });
-    log.info({ projectId, every }, "CodeGraph 达对话阈值，排队增量索引");
+    log.debug({ projectId, every }, "CodeGraph 达对话阈值，排队增量索引");
   }
 
   /** 软删/停用：移出激活集、失效缓存（外置库文件由 removeProject 清理）。 */
@@ -84,7 +84,7 @@ export class CodeGraphService {
     this.deactivate(projectId);
     this.status.remove(projectId);
     removeProjectIndex(path);
-    log.info({ projectId, path }, "CodeGraph 外置索引已清理");
+    log.debug({ projectId, path }, "CodeGraph 外置索引已清理");
   }
 
   /**
@@ -103,14 +103,14 @@ export class CodeGraphService {
     if (this.settings.getBool("codegraph_enabled")) {
       this.activated.add(projectId);
       this.enqueue({ projectId, root: newPath, force: true });
-      log.info({ projectId, newPath }, "CodeGraph 已随项目换目录重建");
+      log.debug({ projectId, newPath }, "CodeGraph 已随项目换目录重建");
     }
   }
 
   /** 服务启动：为所有活跃项目续跑（崩溃/重启恢复：未初始化或过期的补建）。 */
   start(): void {
     if (!this.settings.getBool("codegraph_enabled")) {
-      log.info("codegraph_enabled=false，CodeGraph 未启动");
+      log.debug("codegraph_enabled=false，CodeGraph 未启动");
       return;
     }
     this.stopped = false;
@@ -121,7 +121,7 @@ export class CodeGraphService {
       // 启动即排队一次：未建 → 首建；已建 → sync（幂等，按内容 hash 跳过未变文件）。
       this.enqueue({ projectId: p.id, root: p.path, force: false });
     }
-    log.info({ projects: active.length }, "CodeGraph 已启动（续跑活跃项目）");
+    log.debug({ projects: active.length }, "CodeGraph 已启动（续跑活跃项目）");
   }
 
   /** 手动全量重建（/api/codegraph/rebuild）。清状态后强制排队。 */
@@ -131,7 +131,7 @@ export class CodeGraphService {
     this.status.setStatus(projectId, { status: "pending", indexedFiles: 0, lastError: "" });
     this.activated.add(projectId);
     this.enqueue({ projectId, root: p.path, force: true });
-    log.info({ projectId }, "CodeGraph 手动重建已触发");
+    log.debug({ projectId }, "CodeGraph 手动重建已触发");
     return true;
   }
 
@@ -143,7 +143,7 @@ export class CodeGraphService {
     for (let i = 0; i < 100 && this.active > 0; i++) {
       await new Promise((r) => setTimeout(r, 100));
     }
-    log.info("CodeGraph 已停止");
+    log.debug("CodeGraph 已停止");
   }
 
   statusOf(projectId: string): CgResult {
@@ -251,6 +251,7 @@ export class CodeGraphService {
     const { projectId, root, force } = job;
     try {
       this.status.setStatus(projectId, { status: "indexing", lastError: "" });
+      log.info({ projectId, path: root, force: force ? "全量重建" : "首建/增量" }, "CodeGraph 开始构建索引");
       const lib = codegraphLib();
       let instance: CodeGraphInstance;
       let kind: "full" | "sync";
@@ -276,7 +277,10 @@ export class CodeGraphService {
           lastIndexedAt: Date.now(),
           lastError: "",
         });
-        log.info({ projectId, kind, ...stats, changed: kind === "sync" ? JSON.stringify(result) : undefined }, "CodeGraph 索引完成");
+        log.info(
+          { projectId, path: root, kind, files: stats.fileCount, nodes: stats.nodeCount, edges: stats.edgeCount },
+          "CodeGraph 索引构建完成",
+        );
       } finally {
         try {
           instance.close();

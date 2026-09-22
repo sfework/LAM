@@ -73,10 +73,10 @@ export function buildMcpServer(call: InternalCaller): Server {
     const name = req.params.name;
     const args = (req.params.arguments ?? {}) as Record<string, unknown>;
     const start = Date.now();
-    // 审计日志：每次 callTool 记一条（工具名 / 项目路径 / 结果 / 耗时）。
-    // 只记 project_path 与结果状态，绝不记入参值（SQL 工具的连接串含口令，敏感）。
+    // 审计日志：每次 callTool 记一条（工具名 / 项目路径 / 入参 / 结果 / 耗时）。
+    // 按用户要求原样记录入参（含 SQL 工具连接串），日志文件即含敏感口令，仅本地使用。
     const audit = (status: "ok" | "error" | "denied" | "unknown" | "limited", extra?: Record<string, unknown>) =>
-      log.info({ tool: name, projectPath: args.project_path ?? null, status, ms: Date.now() - start, ...extra }, "MCP callTool");
+      log.info({ tool: name, projectPath: args.project_path ?? null, args, status, ms: Date.now() - start, ...extra }, "MCP callTool");
 
     const def = TOOL_DEFS.find((t) => t.name === name);
     if (!def) {

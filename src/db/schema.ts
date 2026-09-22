@@ -86,11 +86,12 @@ export const knowledge = sqliteTable(
   (t) => [index("ix_knowledge_project").on(t.projectId)],
 );
 
-/** denoise_rules：转发/记忆双通道独立；多条按 createdAt 顺序叠加 */
+/** denoise_rules：转发/记忆双通道独立；多条按 createdAt 顺序叠加；extract=提取（去标记留内容） */
 export const denoiseRules = sqliteTable("denoise_rules", {
   id: text("id").primaryKey(),
   startText: text("start_text").notNull(),
   endText: text("end_text").notNull(),
+  extract: integer("extract", { mode: "boolean" }).notNull().default(false),
   applyForward: integer("apply_forward", { mode: "boolean" }).notNull().default(true),
   applyMemory: integer("apply_memory", { mode: "boolean" }).notNull().default(true),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(false),
@@ -151,6 +152,8 @@ export const memL1 = sqliteTable(
     priority: integer("priority", { mode: "number" }).notNull().default(60),
     sceneName: text("scene_name"),
     sourceL0Ids: text("source_l0_ids").notNull().default("[]"),
+    /** 提取侧 metadata（JSON）：episodic 的 activity_start_time/activity_end_time 等 */
+    metadata: text("metadata").notNull().default("{}"),
     batchId: text("batch_id"),
     createdAt: integer("created_at", { mode: "number" }).notNull(),
     updatedAt: integer("updated_at", { mode: "number" }).notNull(),

@@ -75,7 +75,7 @@ export function createSpaRouter(distDir: string = frontendDistDir()): Hono {
   const enabled = existsSync(indexFile);
 
   if (!enabled) {
-    log.info({ distDir }, "未找到前端构建产物，跳过 SPA 托管（纯后端模式）");
+    log.debug({ distDir }, "未找到前端构建产物，跳过 SPA 托管（纯后端模式）");
     // 仅根路径给一句提示，其余一律 next()，让上层 404 逻辑保持原样。
     spa.get("/", (c) =>
       c.text(
@@ -91,7 +91,7 @@ export function createSpaRouter(distDir: string = frontendDistDir()): Hono {
     return spa;
   }
 
-  log.info({ distDir }, "已启用前端 SPA 托管");
+  log.debug({ distDir }, "已启用前端 SPA 托管");
 
   const handler = (c: Context) => {
     const urlPath = safeDecode(new URL(c.req.url).pathname);

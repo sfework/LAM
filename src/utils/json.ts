@@ -56,3 +56,15 @@ export function parseLlmJson<T>(raw: string): T | null {
 function removeTrailingCommas(s: string): string {
   return s.replace(/,\s*([}\]])/g, "$1");
 }
+
+/**
+ * 解析 LLM 期望返回数组的 JSON，容忍单元素省略外层数组。
+ * 部分模型（如 Qwen）在只有一个情境/一条决策时会直接返回裸对象 {...} 而非 [{...}]，
+ * 这里归一化包裹为 [obj]，避免误判为"非法 JSON"而丢弃整批缓冲。解析不出数组/对象返回 null。
+ */
+export function parseLlmJsonArray<T>(raw: string): T[] | null {
+  const parsed = parseLlmJson<T | T[]>(raw);
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed && typeof parsed === "object") return [parsed];
+  return null;
+}

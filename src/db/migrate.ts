@@ -72,12 +72,12 @@ export function runMigrations(raw: DatabaseSync): void {
       ins.run(entry.idx, entry.tag, Date.now());
       raw.exec("COMMIT");
       count++;
-      log.info({ tag: entry.tag }, "迁移已应用");
+      log.debug({ tag: entry.tag }, "迁移已应用");
     } catch (err) {
       raw.exec("ROLLBACK");
       throw new Error(`迁移 ${entry.tag} 失败: ${String(err)}`);
     }
   }
 
-  if (count === 0) log.info("数据库结构已是最新");
+  if (count === 0) log.debug("数据库结构已是最新");
 }

@@ -6,8 +6,8 @@ import Net from '../Common/Net';
 
 /**
  * 除噪规则页（/api/denoise-rules，DESIGN §2.3）：
- * 规则 = 删除「开始文本」到「结束文本」之间的内容（含两端），多条按创建顺序叠加；
- * 双通道（转发/记忆）各自独立生效。列表按添加时间倒序（新增靠前）展示。
+ * 规则 = 删除「开始文本」到「结束文本」之间的内容（含两端）；提取模式则保留中间内容只剥两端标记；
+ * 多条按创建顺序叠加；双通道（转发/记忆）各自独立生效。列表按添加时间倒序（新增靠前）展示。
  * 操作列：启用开关（/toggle，行内直接切换）、编辑、删除；搜索支持关键字（开始/结束文本模糊）。
  * 启用仅在列表操作，编辑弹窗不重复提供。
  */
@@ -19,6 +19,10 @@ function getTableColumns(view) {
         },
         { title: '开始文本', dataIndex: 'startText', ellipsis: true },
         { title: '结束文本', dataIndex: 'endText', ellipsis: true },
+        {
+            title: '提取', dataIndex: 'extract', width: 70,
+            render: (text) => text ? <Tag color='blue'>提取</Tag> : <Tag color='grey'>删除</Tag>,
+        },
         {
             title: '转发通道', dataIndex: 'applyForward', width: 100,
             render: (text) => text ? <Tag color='green'>生效</Tag> : <Tag color='grey'>否</Tag>,
@@ -97,6 +101,7 @@ class EditModal extends UIFormModal {
         const body = {
             startText: values.startText,
             endText: values.endText,
+            extract: !!values.extract,
             applyForward: !!values.applyForward,
             applyMemory: !!values.applyMemory,
         };
@@ -126,6 +131,9 @@ class EditModal extends UIFormModal {
             </Row>
             <Row gutter={16}>
                 <Col span={8}>
+                    <Form.Switch field='extract' label='提取' />
+                </Col>
+                <Col span={8}>
                     <Form.Switch field='applyForward' label='转发通道' />
                 </Col>
                 <Col span={8}>
@@ -133,6 +141,7 @@ class EditModal extends UIFormModal {
                 </Col>
             </Row>
             <div style={{ color: 'var(--semi-color-text-2)', fontSize: 12, lineHeight: 1.7 }}>
+                <div><Typography.Text strong>提取</Typography.Text>：开启后命中区间不再整段删除，而是保留中间内容、仅剥掉两端标记（如只去 &lt;context&gt;…&lt;/context&gt; 壳子）；关闭则连标记带内容一起删。开始与结束文本相同时提取无意义，仍按删除处理。</div>
                 <div><Typography.Text strong>转发通道</Typography.Text>：命中的内容仅从「转发给上游模型」的请求副本中删除（影响模型看到什么）。</div>
                 <div><Typography.Text strong>记忆通道</Typography.Text>：命中的内容仅从「回流至记忆库」的副本中删除（影响提取/召回存什么）。</div>
                 <div>两者相互独立：只开转发则记忆仍存原文，只开记忆则模型仍看到原文。未启用时该规则在两个通道均不生效。</div>

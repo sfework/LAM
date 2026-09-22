@@ -372,7 +372,7 @@ describe("/api/tools", () => {
     const r = await call(app, "POST", "/api/tools/list", { pageSize: 100 });
     expect(r.status).toBe(200);
     const page = r.body.data as { list: { id: string; name: string; group: string; description: string }[]; totalCount: number };
-    expect(page.totalCount).toBeGreaterThanOrEqual(30);
+    expect(page.totalCount).toBeGreaterThanOrEqual(27);
     const names = page.list.map((t) => t.name);
     expect(names).toContain("memory_search");
     expect(names).toContain("codegraph_status");

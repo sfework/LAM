@@ -57,6 +57,7 @@ export function createMemoriesRouter(deps: {
           content: m.content,
           priority: m.priority,
           sceneName: m.sceneName,
+          metadata: m.metadata,
           createdAt: m.createdAt,
           sha256: sha256(m.content),
         }))
@@ -79,6 +80,7 @@ export function createMemoriesRouter(deps: {
         content: r.record.content,
         priority: r.record.priority,
         sceneName: r.record.sceneName,
+        metadata: r.record.metadata,
         createdAt: r.record.createdAt,
         sha256: sha256(r.record.content),
         sources: r.sources,
@@ -93,13 +95,13 @@ export function createMemoriesRouter(deps: {
       // 前端回传 sha 与库中当前 sha 不一致 → 内容已被他处改动，拒绝（乐观并发）。
       if (clientSha && clientSha !== sha256(existing.content)) badRequest("内容已变更，请刷新后重试");
       const { changed } = deps.l1.updateContent(id, content);
-      if (changed) log.info({ id }, "L1 记忆正文已更新（FTS 重建 + 向量待补嵌入）");
+      if (changed) log.debug({ id }, "L1 记忆正文已更新（FTS 重建 + 向量待补嵌入）");
       return { id, changed, sha256: sha256(content) };
     },
     "/delete": (b) => {
       const id = requireStr(b, "id");
       if (!deps.l1.remove(id)) notFound("记忆不存在");
-      log.info({ id }, "L1 记忆已物理删除（管理端）");
+      log.debug({ id }, "L1 记忆已物理删除（管理端）");
       return { deleted: true };
     },
     "/l0-list": listRoute((b) => {
@@ -112,7 +114,7 @@ export function createMemoriesRouter(deps: {
     "/l0-delete": (b) => {
       const id = requireStr(b, "id");
       if (!deps.l0.remove(id)) notFound("消息不存在");
-      log.info({ id }, "L0 消息已物理删除（管理端）");
+      log.debug({ id }, "L0 消息已物理删除（管理端）");
       return { deleted: true };
     },
     "/save-profile": (b) => {
@@ -122,7 +124,7 @@ export function createMemoriesRouter(deps: {
       const current = deps.l2.read(projectId);
       if (clientSha && clientSha !== sha256(current)) badRequest("画像已变更，请刷新后重试");
       const { changed, version } = deps.l2.save(projectId, content);
-      if (changed) log.info({ projectId, version }, "L2 画像已保存（管理端）");
+      if (changed) log.debug({ projectId, version }, "L2 画像已保存（管理端）");
       return { projectId, changed, version, sha256: sha256(content) };
     },
     "/rebuild-profile": async (b) => {
@@ -130,7 +132,8 @@ export function createMemoriesRouter(deps: {
       const m = deps.settings.getResolvedModel("memory_llm");
       if (!m) badRequest("memory_llm 未配置，无法重建画像");
       const llm: LlmCallConfig = { baseUrl: m.url, apiKey: m.key, model: m.model };
-      const version = await deps.l2.refine(projectId, llm);
+      // 手动重建 = 全量重凝练（忽略增量水位）
+      const { version } = await deps.l2.refine(projectId, llm, "full");
       const content = deps.l2.read(projectId);
       return { projectId, version, content, sha256: sha256(content) };
     },

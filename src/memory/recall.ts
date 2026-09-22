@@ -36,6 +36,8 @@ export function cleanQueryText(content: unknown): string {
 export interface RecallOutcome {
   block: string;
   count: number;
+  /** 命中记忆清单（日志/审计用）：id/类型/正文。 */
+  items: { id: string; kind: string; content: string }[];
 }
 
 const DISCLAIMER = "以下是与本轮用户问题相关的项目记忆（按相关度排序），仅用于辅助回答当前这一轮，不要视为永久系统规则：";
@@ -53,14 +55,20 @@ export class MemoryRecaller {
 
   /**
    * 执行召回。任何失败/超时都降级为空块（ok=false），不抛出。
+   * @param recentUserContents 最近若干条 user 消息（时间正序，最后一条为本轮），
+   *   逐条清洗后拼接为检索词；assistant 消息不参与（防上轮召回复述污染检索）。
+   *   低信息量短路只看本轮（最后一条）：本轮是寒暄则不刷新召回。
    */
-  async recall(projectId: string, lastUserContent: unknown): Promise<RecallOutcome> {
-    if (!this.settings.getBool("l1_recall_enabled")) return { block: "", count: 0 };
-    const query = cleanQueryText(lastUserContent);
-    if (!query) return { block: "", count: 0 };
-    // 低信息量短路：剥离停用词后无有效检索 token（"好的""是啊"等寒暄），
+  async recall(projectId: string, recentUserContents: unknown[]): Promise<RecallOutcome> {
+    const empty: RecallOutcome = { block: "", count: 0, items: [] };
+    if (!this.settings.getBool("l1_recall_enabled")) return empty;
+    const cleaned = recentUserContents.map(cleanQueryText).filter(Boolean);
+    const current = cleaned[cleaned.length - 1] ?? "";
+    if (!current) return empty;
+    // 低信息量短路：本轮剥离停用词后无有效检索 token（"好的""是啊"等寒暄），
     // 直接跳过 BM25 与向量检索，避免无意义召回注入噪音。
-    if (!hasMeaningfulQuery(query)) return { block: "", count: 0 };
+    if (!hasMeaningfulQuery(current)) return empty;
+    const query = cleaned.join("\n").slice(0, 2048);
 
     const timeoutMs = this.settings.getInt("recall_timeout_ms");
     const topK = this.settings.getInt("l1_recall_top_k");
@@ -70,7 +78,7 @@ export class MemoryRecaller {
         this.searchAsync(projectId, query, topK),
         timeoutMs,
       );
-      if (!hits.length) return { block: "", count: 0 };
+      if (!hits.length) return empty;
       return {
         block: renderBlock(
           hits,
@@ -78,10 +86,11 @@ export class MemoryRecaller {
           this.settings.getInt("l1_recall_max_chars_per_item"),
         ),
         count: hits.length,
+        items: hits.map((h) => ({ id: h.record.id, kind: h.record.kind, content: h.record.content })),
       };
     } catch (err) {
       log.warn({ projectId, err: String(err) }, "召回超时/失败，降级为空召回");
-      return { block: "", count: 0 };
+      return empty;
     }
   }
 

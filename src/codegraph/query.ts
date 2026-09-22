@@ -118,7 +118,7 @@ export class CodeGraphQuery {
     if (!list.length) {
       return { status: "ready", message: `${sym.name} 没有${dir === "callers" ? "调用方" : "被调方"}。`, data: [] };
     }
-    return { status: "ready", data: { symbol: brief(sym), [dir]: list.map(brief), note: `${verb}关系为直接一跳。` } };
+      return { status: "ready", data: { symbol: brief(sym), [dir]: list.map(brief), note: `${verb}关系为直接一跳（calls 边）。` } };
   }
 
   /** 5) 变更影响面（反向 BFS）。 */
@@ -132,9 +132,9 @@ export class CodeGraphQuery {
     const d = Math.max(1, Math.min(IMPACT_DEPTH_MAX, Math.floor(depth)));
     const affected = this.readers.impact(projectId, root, sym.id, d);
     if (!affected.length) {
-      return { status: "ready", message: `${sym.name} 在 ${d} 层内没有受影响的调用方（可能是入口或未被引用）。`, data: [] };
+      return { status: "ready", message: `${sym.name} 在 ${d} 层内没有受影响的符号（可能是入口且未被引用）。`, data: [] };
     }
-    return { status: "ready", data: { symbol: brief(sym), depth: d, affectedCount: affected.length, affected: affected.slice(0, 100).map(brief) } };
+    return { status: "ready", data: { symbol: brief(sym), depth: d, affectedCount: affected.length, affected: affected.slice(0, 100).map(brief), note: "依赖口径：调用/引用/继承/实现/实例化/类型引用。" } };
   }
 
   /** 2) 综合探索：符号 + 关系 + 同文件兄弟符号。 */

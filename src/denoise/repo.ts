@@ -5,6 +5,7 @@ import type { DenoiseRuleData } from "./engine.js";
 export interface DenoiseRuleInput {
   startText: string;
   endText: string;
+  extract?: boolean;
   applyForward?: boolean;
   applyMemory?: boolean;
   enabled?: boolean;
@@ -15,6 +16,7 @@ function toRule(r: Record<string, unknown>): DenoiseRuleData {
     id: r.id as string,
     startText: r.start_text as string,
     endText: r.end_text as string,
+    extract: Boolean(r.extract),
     applyForward: Boolean(r.apply_forward),
     applyMemory: Boolean(r.apply_memory),
     enabled: Boolean(r.enabled),
@@ -50,12 +52,13 @@ export class DenoiseRepo {
     const id = newId("dr");
     this.raw
       .prepare(
-        "INSERT INTO denoise_rules (id, start_text, end_text, apply_forward, apply_memory, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT INTO denoise_rules (id, start_text, end_text, extract, apply_forward, apply_memory, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
       )
       .run(
         id,
         input.startText,
         input.endText,
+        input.extract ?? false ? 1 : 0,
         input.applyForward ?? true ? 1 : 0,
         input.applyMemory ?? true ? 1 : 0,
         input.enabled ?? false ? 1 : 0,
@@ -71,17 +74,19 @@ export class DenoiseRepo {
     const merged = {
       startText: input.startText ?? existing.startText,
       endText: input.endText ?? existing.endText,
+      extract: input.extract ?? existing.extract,
       applyForward: input.applyForward ?? existing.applyForward,
       applyMemory: input.applyMemory ?? existing.applyMemory,
       enabled: input.enabled ?? existing.enabled,
     };
     this.raw
       .prepare(
-        "UPDATE denoise_rules SET start_text=?, end_text=?, apply_forward=?, apply_memory=?, enabled=?, updated_at=? WHERE id=?",
+        "UPDATE denoise_rules SET start_text=?, end_text=?, extract=?, apply_forward=?, apply_memory=?, enabled=?, updated_at=? WHERE id=?",
       )
       .run(
         merged.startText,
         merged.endText,
+        merged.extract ? 1 : 0,
         merged.applyForward ? 1 : 0,
         merged.applyMemory ? 1 : 0,
         merged.enabled ? 1 : 0,

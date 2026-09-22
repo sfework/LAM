@@ -71,6 +71,20 @@
       "when": 1789734482324,
       "tag": "0009_living_miss_america",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1789942776057,
+      "tag": "0010_narrow_wind_dancer",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1789946857445,
+      "tag": "0011_gray_bill_hollister",
+      "breakpoints": true
     }
   ]
 }

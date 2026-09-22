@@ -143,13 +143,13 @@ MCP Server 挂在同一端口：**`http://localhost:8790/mcp`**（Streamable HTT
 }
 ```
 
-开放 30 个只读工具：
+开放 27 个只读工具：
 
 | 分组 | 工具 | 用途 |
 |------|------|------|
-| 知识库 | `knowledge_list` / `knowledge_read` | 列清单 / 读正文 |
-| Agents | `agent_list` / `agent_read` | 列清单 / 读正文 |
-| 技能 | `skill_list` / `skill_read` | 列清单 / 读正文 |
+| 知识库 | `knowledge_read` | 按 id 读正文（清单已注入系统提示 `<knowledge>` 段） |
+| Agents | `agent_read` | 按 id 读正文（清单已注入系统提示 `<agents>` 段） |
+| 技能 | `skill_read` | 按 id 读正文（清单已注入系统提示 `<skills>` 段） |
 | 记忆 | `memory_search` / `memory_read` / `memory_read_profile` | 检索 L1 / 读带溯源原文 / 读 L2 画像 |
 | 对话 | `conversation_search` | 检索 L0 原文 |
 | 代码图 | `codegraph_search` / `explore` / `callers` / `callees` / `impact` / `node` / `status` / `files` | 符号搜索 / 探索 / 调用方 / 被调方 / 影响面 / 单符号 / 索引状态 / 文件 |

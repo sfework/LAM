@@ -13,6 +13,7 @@ import { runMigrations } from "../src/db/migrate.js";
 function rule(partial: Partial<DenoiseRuleData> & { startText: string; endText: string }): DenoiseRuleData {
   return {
     id: partial.id ?? "r",
+    extract: false,
     applyForward: true,
     applyMemory: true,
     enabled: true,
@@ -53,6 +54,32 @@ describe("applyRuleToText", () => {
   it("空文本/空标记原样返回", () => {
     expect(applyRuleToText("", r)).toBe("");
     expect(applyRuleToText("abc", rule({ startText: "", endText: "x" }))).toBe("abc");
+  });
+});
+
+describe("applyRuleToText 提取模式", () => {
+  const ex = rule({ startText: "<ctx>", endText: "</ctx>", extract: true });
+
+  it("保留中间内容，剥掉两端标记", () => {
+    expect(applyRuleToText("a<ctx>keep</ctx>b", ex)).toBe("akeepb");
+  });
+  it("多处命中全提取", () => {
+    expect(applyRuleToText("<ctx>1</ctx> x <ctx>2</ctx>", ex)).toBe("1 x 2");
+  });
+  it("未闭合不处理", () => {
+    expect(applyRuleToText("a<ctx>open", ex)).toBe("a<ctx>open");
+  });
+  it("保留内容含 $ 特殊序列不被转义", () => {
+    expect(applyRuleToText("<ctx>$& $1 $'</ctx>", ex)).toBe("$& $1 $'");
+  });
+  it("start==end 时提取退化为删除", () => {
+    const rr = rule({ startText: "[SEP]", endText: "[SEP]", extract: true });
+    expect(applyRuleToText("a[SEP]b", rr)).toBe("ab");
+  });
+  it("与删除规则叠加：各自生效", () => {
+    const del = rule({ startText: "<del>", endText: "</del>", createdAt: 1 });
+    ex.createdAt = 0;
+    expect(applyRulesToText("1<ctx>c</ctx>2<del>d</del>3", [ex, del])).toBe("1c23");
   });
 });
 
@@ -123,6 +150,42 @@ describe("denoiseMessages", () => {
     expect(msgs[0]!.content).toBe("a<noise>b</noise>");
     expect(out[0]!.content).toBe("a"); // 删除 <noise>b</noise>（含标记）→ "a"
   });
+
+  it("后处理：降噪后 trim 首尾空白（含空行）", () => {
+    const msgs = [{ role: "user", content: "\n\n  hi<noise>x</noise>  \n" }];
+    expect(denoiseMessages(msgs, [r], "forward")[0]!.content).toBe("hi");
+  });
+  it("后处理：零规则也 trim（与是否命中无关）", () => {
+    const msgs = [{ role: "assistant", content: "  hello \n\n" }];
+    expect(denoiseMessages(msgs, [], "forward")[0]!.content).toBe("hello");
+  });
+  it("后处理：trim 后为空的消息整条删除", () => {
+    const msgs = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "  \n " }, // 纯空白 → 删
+      { role: "assistant", content: "<noise>a</noise>" }, // 命中后剩空 → 删
+      { role: "user", content: "keep" },
+    ];
+    const out = denoiseMessages(msgs, [r], "forward");
+    expect(out.map((m) => m.content)).toEqual(["sys", "keep"]);
+  });
+  it("后处理：带 tool_calls 的 assistant 空 content 不删", () => {
+    const msgs = [
+      { role: "assistant", content: "", tool_calls: [{ id: "t1", type: "function", function: { name: "f", arguments: "{}" } }] },
+      { role: "tool", content: "result", tool_call_id: "t1" },
+    ];
+    const out = denoiseMessages(msgs, [r], "forward");
+    expect(out).toHaveLength(2);
+  });
+  it("后处理：块数组 text 块 trim，全空文本块且无非文本块则删除", () => {
+    const empty = [{ role: "user", content: [{ type: "text", text: "  <noise>x</noise> " }] }];
+    expect(denoiseMessages(empty, [r], "forward")).toHaveLength(0);
+    const withImage = [
+      { role: "user", content: [{ type: "text", text: "  " }, { type: "image_url", image_url: { url: "u" } }] },
+    ];
+    const out = denoiseMessages(withImage, [r], "forward");
+    expect(out).toHaveLength(1); // 有非文本块，保留
+  });
 });
 
 describe("DenoiseRepo", () => {
@@ -138,10 +201,12 @@ describe("DenoiseRepo", () => {
     const c = repo.create({ startText: "<a>", endText: "</a>" });
     expect(c.id).toMatch(/^dr_/);
     expect(c.enabled).toBe(false); // 默认关闭
+    expect(c.extract).toBe(false); // 默认删除模式
     expect(c.applyForward).toBe(true);
     expect(c.applyMemory).toBe(true);
-    const u = repo.update(c.id, { enabled: true });
+    const u = repo.update(c.id, { enabled: true, extract: true });
     expect(u?.enabled).toBe(true);
+    expect(u?.extract).toBe(true);
     expect(repo.list()).toHaveLength(1);
     expect(repo.delete(c.id)).toBe(true);
     expect(repo.list()).toHaveLength(0);

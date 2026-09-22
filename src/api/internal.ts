@@ -91,6 +91,7 @@ export function createInternalRouter(deps: InternalDeps): Hono {
       content: r.record.content,
       priority: r.record.priority,
       sceneName: r.record.sceneName,
+      metadata: r.record.metadata,
       sources: r.sources,
     });
   });

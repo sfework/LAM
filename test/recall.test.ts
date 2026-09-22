@@ -166,7 +166,7 @@ describe("MemoryRecaller", () => {
     const ctx = fresh(false);
     ctx.store.insert(ctx.projectId, mk("用户偏好使用 pnpm 管理依赖", "persona", 90));
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
-    const { block, count } = await recaller.recall(ctx.projectId, "我该怎么管理依赖？pnpm 还是 npm");
+    const { block, count } = await recaller.recall(ctx.projectId, ["我该怎么管理依赖？pnpm 还是 npm"]);
     expect(count).toBe(1);
     expect(block).toContain("<recalled>");
     expect(block).toContain("仅用于辅助回答当前这一轮");
@@ -179,19 +179,19 @@ describe("MemoryRecaller", () => {
     ctx.store.insert(ctx.projectId, mk("记忆"));
     ctx.settings.set("l1_recall_enabled", "false");
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
-    expect((await recaller.recall(ctx.projectId, "记忆")).count).toBe(0);
+    expect((await recaller.recall(ctx.projectId, ["记忆"])).count).toBe(0);
   });
 
   it("无命中返回空块", async () => {
     const ctx = fresh(false);
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
-    expect((await recaller.recall(ctx.projectId, "完全无关的问题 xyz")).block).toBe("");
+    expect((await recaller.recall(ctx.projectId, ["完全无关的问题 xyz"])).block).toBe("");
   });
 
   it("检索词清洗后为空则跳过", async () => {
     const ctx = fresh(false);
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
-    expect((await recaller.recall(ctx.projectId, "<project>path: x</project>")).count).toBe(0);
+    expect((await recaller.recall(ctx.projectId, ["<project>path: x</project>"])).count).toBe(0);
   });
 
   it("超时降级为空召回", async () => {
@@ -206,7 +206,7 @@ describe("MemoryRecaller", () => {
       await new Promise((r) => setTimeout(r, 1500)); // 慢于超时
       return new Float32Array(EMBEDDING_DIM);
     });
-    const { block } = await recaller.recall(ctx.projectId, "查询内容");
+    const { block } = await recaller.recall(ctx.projectId, ["查询内容"]);
     expect(block).toBe("");
   });
 
@@ -216,7 +216,7 @@ describe("MemoryRecaller", () => {
     ctx.settings.set("l1_recall_max_chars", "80");
     ctx.settings.set("l1_recall_top_k", "5");
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
-    const { block } = await recaller.recall(ctx.projectId, "记忆 条目 编号");
+    const { block } = await recaller.recall(ctx.projectId, ["记忆 条目 编号"]);
     expect(block).toContain("已截断");
   });
 
@@ -225,8 +225,8 @@ describe("MemoryRecaller", () => {
     // 库中存在含"好的"的记忆，若不短路则 BM25 会命中并注入噪音
     ctx.store.insert(ctx.projectId, mk("用户说好的表示同意"));
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
-    expect((await recaller.recall(ctx.projectId, "好的")).count).toBe(0);
-    expect((await recaller.recall(ctx.projectId, "好的")).block).toBe("");
+    expect((await recaller.recall(ctx.projectId, ["好的"])).count).toBe(0);
+    expect((await recaller.recall(ctx.projectId, ["好的"])).block).toBe("");
   });
 
   it("含实义词的指令（按此执行）不被停用词误杀", async () => {
@@ -234,7 +234,7 @@ describe("MemoryRecaller", () => {
     ctx.store.insert(ctx.projectId, mk("执行部署脚本前先跑测试"));
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
     // "执行"为实义 bigram，应正常检索命中
-    expect((await recaller.recall(ctx.projectId, "按此执行")).count).toBeGreaterThan(0);
+    expect((await recaller.recall(ctx.projectId, ["按此执行"])).count).toBeGreaterThan(0);
   });
 
   it("单条超 per-item 上限时逐条截断保留头部", async () => {
@@ -242,7 +242,7 @@ describe("MemoryRecaller", () => {
     ctx.store.insert(ctx.projectId, mk("记忆甲" + "长".repeat(300)));
     ctx.settings.set("l1_recall_max_chars_per_item", "50");
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
-    const { block } = await recaller.recall(ctx.projectId, "记忆甲");
+    const { block } = await recaller.recall(ctx.projectId, ["记忆甲"]);
     const itemLine = block.split("\n").find((l) => l.includes("记忆甲"));
     expect(itemLine).toBeDefined();
     expect([...(itemLine ?? "")].length).toBeLessThanOrEqual(50);
@@ -257,9 +257,29 @@ describe("MemoryRecaller", () => {
     // 预算：头部两行 + 第一条 + 第二条放不下整行但够半条（≥40）
     ctx.settings.set("l1_recall_max_chars", "180");
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
-    const { block } = await recaller.recall(ctx.projectId, "编号 内容");
+    const { block } = await recaller.recall(ctx.projectId, ["编号 内容"]);
     expect(block).toContain("已截断");
     // 第二条以截断形式部分出现（含"编号一"头部），而非直接消失
     expect(block).toContain("编号一");
+  });
+
+  it("多条 user 消息拼接检索：短追问靠上文命中", async () => {
+    const ctx = fresh(false);
+    // 记忆主题词只出现在上文（第一轮），本轮是省略主语的短追问
+    ctx.store.insert(ctx.projectId, mk("CodeGraph 索引必须外置于 DATA_DIR 目录"), "fact", 90);
+    const recaller = new MemoryRecaller(ctx.store, ctx.settings);
+    // 仅本轮短词：召回不到
+    expect((await recaller.recall(ctx.projectId, ["那方案呢"])).count).toBe(0);
+    // 带上文：拼接后命中
+    const { count } = await recaller.recall(ctx.projectId, ["CodeGraph 索引外置方案讨论", "那方案呢"]);
+    expect(count).toBeGreaterThan(0);
+  });
+
+  it("本轮为寒暄时短路，不因上文有话题而刷新召回", async () => {
+    const ctx = fresh(false);
+    ctx.store.insert(ctx.projectId, mk("用户偏好使用 pnpm 管理依赖", "persona", 90));
+    const recaller = new MemoryRecaller(ctx.store, ctx.settings);
+    const { count } = await recaller.recall(ctx.projectId, ["pnpm 依赖怎么管理", "好的"]);
+    expect(count).toBe(0);
   });
 });

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { chatComplete, type LlmCallConfig, type LlmMessage, type LlmCallOptions } from "../llm/client.js";
-import { parseLlmJson } from "../utils/json.js";
+import { parseLlmJsonArray } from "../utils/json.js";
 import { createLogger } from "../infra/logger.js";
 import {
   getSkillExtractSystemPrompt,
@@ -84,8 +84,7 @@ export class SkillExtractor {
         ],
         { json: true, temperature: 0.2 },
       );
-      const parsed = parseLlmJson<SkillCandidate[]>(out);
-      candidates = Array.isArray(parsed) ? parsed : [];
+      candidates = parseLlmJsonArray<SkillCandidate>(out) ?? [];
     } catch (err) {
       log.warn({ projectId, err: String(err) }, "技能抽取 LLM 调用失败");
       return empty;
@@ -132,7 +131,7 @@ export class SkillExtractor {
       res.stored++;
     }
 
-    if (res.extracted) log.info({ projectId, ...res }, "技能抽取完成（待人工审核启用）");
+    if (res.extracted) log.debug({ projectId, ...res }, "技能抽取完成（待人工审核启用）");
     return res;
   }
 }

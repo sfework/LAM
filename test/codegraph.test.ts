@@ -35,6 +35,16 @@ beforeAll(() => {
     path.join(projDir, "src", "util.ts"),
     `export function helper(): number { return 42; }\nexport function main(): number { return helper() + 1; }\n`,
   );
+  // 段词检索夹具：camelCase 名称拆词后"state machine"能命中，连续子串搜不到分开的词
+  writeFileSync(
+    path.join(projDir, "src", "Order.cs"),
+    `namespace O {\n  public class OrderStateMachine {\n    public int ComputeTotal() { return 0; }\n  }\n}\n`,
+  );
+  // 依赖边夹具：字段类型引用 CustomerServices（非 calls，impact 应能波及）
+  writeFileSync(
+    path.join(projDir, "src", "Holder.cs"),
+    `namespace S {\n  public class Holder {\n    private CustomerServices _svc;\n  }\n}\n`,
+  );
 });
 afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
@@ -114,6 +124,36 @@ describe("codegraph (vendored)", () => {
     const byId = new Map(g.nodes.map((n) => [n.id, n]));
     const mainEdge = g.edges.find((e) => byId.get(e.from)?.qualifiedName.endsWith("main") && byId.get(e.to)?.qualifiedName.endsWith("helper"));
     expect(mainEdge).toBeTruthy();
+    await cg.stop();
+  }, 90_000);
+
+  it("search：FTS/段词/字段过滤三通道", async () => {
+    const { cg, projectId } = fresh();
+    cg.activate(projectId, projDir);
+    expect(await waitReady(cg, projectId)).toBe("ready");
+    // 段词通道：散文词"state machine"命中 OrderStateMachine（旧子串扫描做不到）
+    const seg = cg.query.search(projectId, "state machine");
+    expect((seg.data as { name: string }[]).some((s) => s.name === "OrderStateMachine")).toBe(true);
+    // 字段过滤：kind:class 只回类节点
+    const cls = cg.query.search(projectId, "kind:class");
+    const items = cls.data as { kind: string }[];
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.every((s) => s.kind === "class")).toBe(true);
+    // 子串能力保留：词中片段（FTS 前缀匹配不到的 middle-of-name）仍可命中
+    const sub = cg.query.search(projectId, "tateMachine");
+    expect((sub.data as { name: string }[]).some((s) => s.name === "OrderStateMachine")).toBe(true);
+    await cg.stop();
+  }, 90_000);
+
+  it("impact：依赖口径含类型引用（字段引用类 → 波及，calls 图里没有）", async () => {
+    const { cg, projectId } = fresh();
+    cg.activate(projectId, projDir);
+    expect(await waitReady(cg, projectId)).toBe("ready");
+    const r = cg.query.impact(projectId, { name: "CustomerServices" }, 1);
+    expect(r.status).toBe("ready");
+    const affected = (r.data as { affected: { qualifiedName: string }[] }).affected ?? [];
+    // Holder 侧（类或字段）应因类型引用进入影响面
+    expect(affected.some((s) => s.qualifiedName.includes("Holder"))).toBe(true);
     await cg.stop();
   }, 90_000);
 

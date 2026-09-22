@@ -13,6 +13,8 @@ export interface L1Record {
   priority: number;
   sceneName: string | null;
   sourceL0Ids: string[];
+  /** 提取侧 metadata（JSON 字符串）：episodic 的 activity_start_time/activity_end_time 等。 */
+  metadata: string;
   batchId: string | null;
   createdAt: number;
   updatedAt: number;
@@ -26,6 +28,7 @@ export interface NewL1 {
   priority: number;
   sceneName: string | null;
   sourceL0Ids: string[];
+  metadata?: string;
   batchId: string | null;
   createdAt: number;
 }
@@ -39,6 +42,7 @@ function toRecord(r: Record<string, unknown>): L1Record {
     priority: r.priority as number,
     sceneName: (r.scene_name as string | null) ?? null,
     sourceL0Ids: JSON.parse((r.source_l0_ids as string) || "[]"),
+    metadata: (r.metadata as string) || "{}",
     batchId: (r.batch_id as string | null) ?? null,
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
@@ -76,8 +80,8 @@ export class L1Store {
     const id = newId("l1");
     this.raw
       .prepare(
-        `INSERT INTO mem_l1 (id, project_id, kind, content, priority, scene_name, source_l0_ids, batch_id, created_at, updated_at, superseded_by, deleted_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL)`,
+        `INSERT INTO mem_l1 (id, project_id, kind, content, priority, scene_name, source_l0_ids, metadata, batch_id, created_at, updated_at, superseded_by, deleted_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,NULL)`,
       )
       .run(
         id,
@@ -87,6 +91,7 @@ export class L1Store {
         rec.priority,
         rec.sceneName,
         JSON.stringify(rec.sourceL0Ids),
+        rec.metadata ?? "{}",
         rec.batchId,
         rec.createdAt,
         rec.createdAt,

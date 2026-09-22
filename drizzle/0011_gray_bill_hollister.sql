@@ -1,0 +1,1 @@
+ALTER TABLE `mem_l1` ADD `metadata` text DEFAULT '{}' NOT NULL;

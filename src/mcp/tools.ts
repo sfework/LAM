@@ -27,7 +27,9 @@ const SQL_DIALECTS: { key: string; label: string; conn: string }[] = [
   { key: "sqlserver", label: "SQL Server", conn: "Server=host,1433;Database=db;User Id=sa;Password=...;TrustServerCertificate=True;" },
 ];
 
-/** 生成 12 个 SQL 工具定义（每方言三个），端点按方言走路径段。 */
+/** 生成 12 个 SQL 工具定义（每方言三个），端点按方言走路径段。
+ * 注意：knowledge/agent/skill 的 list 工具已移除（决策 70）——清单已注入系统提示，模型按 id 直接 read 即可；
+ * internal 的 knowledge/agents/skills list 端点保留（供管理台与 simulate-usage 脚本使用）。 */
 function sqlToolDefs(): ToolDef[] {
   const defs: ToolDef[] = [];
   for (const d of SQL_DIALECTS) {
@@ -81,39 +83,21 @@ function sqlToolDefs(): ToolDef[] {
 
 export const TOOL_DEFS: ToolDef[] = [
   {
-    name: "knowledge_list",
-    description: "列出可读取的知识库条目（标题+描述）。返回结果含 id，配合 knowledge_read 读取正文。",
-    inputSchema: { type: "object", properties: { project_path: PROJECT_PATH_PROP }, required: ["project_path"], additionalProperties: false },
-    endpoint: "/internal/knowledge/list",
-  },
-  {
     name: "knowledge_read",
     description: "按 id 读取知识库条目的完整正文。",
-    inputSchema: { type: "object", properties: { id: { type: "string", description: "知识条目 id（来自 knowledge_list）" } }, required: ["id"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { id: { type: "string", description: "知识条目 id（来自系统提示 <knowledge> 段的 id）" } }, required: ["id"], additionalProperties: false },
     endpoint: "/internal/knowledge/read",
-  },
-  {
-    name: "agent_list",
-    description: "列出已启用的 Agent 定义（名称+描述）。",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    endpoint: "/internal/agents/list",
   },
   {
     name: "agent_read",
     description: "按 id 读取 Agent 的完整正文（子智能体定义）。",
-    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { id: { type: "string", description: "Agent id（来自系统提示 <agents> 段的 id）" } }, required: ["id"], additionalProperties: false },
     endpoint: "/internal/agents/read",
-  },
-  {
-    name: "skill_list",
-    description: "列出已启用的技能（名称+描述）。",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    endpoint: "/internal/skills/list",
   },
   {
     name: "skill_read",
     description: "按 id 读取技能的完整正文。",
-    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { id: { type: "string", description: "技能 id（来自系统提示 <skills> 段的 id）" } }, required: ["id"], additionalProperties: false },
     endpoint: "/internal/skills/read",
   },
   {
@@ -165,12 +149,12 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "codegraph_search",
     description:
-      "在项目代码符号索引中按名称搜索（大小写不敏感子串匹配）。返回符号 id/名称/类型/所在文件/行号。用于定位某个函数、类、方法等的具体位置。索引构建中会返回进度提示，可稍后重试。",
+      "在项目代码符号索引中搜索（FTS 前缀 + camelCase 段词 + 子串兜底，大小写不敏感）。支持 kind:/lang:/path:/name: 字段过滤（如 \"kind:class path:controller auth\"）。返回符号 id/名称/类型/所在文件/行号。用于定位某个函数、类、方法等的具体位置。索引构建中会返回进度提示，可稍后重试。",
     inputSchema: {
       type: "object",
       properties: {
         project_path: PROJECT_PATH_PROP,
-        query: { type: "string", description: "符号名关键词。" },
+        query: { type: "string", description: "符号名关键词，可带字段过滤前缀 kind:/lang:/path:/name:。" },
         limit: { type: "number", description: "返回条数上限（可选，默认 30）。" },
       },
       required: ["project_path", "query"],
@@ -229,7 +213,7 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "codegraph_impact",
     description:
-      "分析修改某符号的影响面：沿调用链反向 BFS 若干层，列出受影响的符号集合。改签名/删函数前评估波及范围用。用 id 或唯一 name 定位符号，depth 控制层数（默认 2，上限 5）。",
+      "分析修改某符号的影响面：沿依赖边（调用/引用/继承/实现/实例化/类型引用）反向 BFS 若干层，列出受影响的符号集合。改签名/删函数前评估波及范围用。用 id 或唯一 name 定位符号，depth 控制层数（默认 2，上限 5）。",
     inputSchema: {
       type: "object",
       properties: {

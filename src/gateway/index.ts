@@ -74,11 +74,21 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
     const withSnapshot = injectSnapshot(denoised, snapshot);
 
     // 5.5 每轮 L1 动态召回 → 拼到最后一条 user 之前（超时/失败降级空召回，不阻塞）
-    const lastUser = [...denoised].reverse().find((m) => m.role === "user");
+    // 检索词 = 最近 N 条 user 消息（N 热更可调，assistant 不参与防复述污染），提升短追问的召回准确率。
+    const userMsgs = denoised.filter((m) => m.role === "user");
+    const recallTurns = deps.settings.getInt("l1_recall_query_turns");
+    const recentUsers = userMsgs.slice(-Math.max(1, recallTurns));
+    const lastUser = userMsgs[userMsgs.length - 1];
     let finalMessages = withSnapshot;
-    if (project.projectId && lastUser) {
-      const { block } = await deps.recaller.recall(project.projectId, lastUser.content);
+    if (project.projectId && lastUser && recentUsers.length) {
+      const { block, items } = await deps.recaller.recall(project.projectId, recentUsers.map((m) => m.content));
       if (block) finalMessages = prependRecall(withSnapshot, block);
+      if (items.length) {
+        log.info(
+          { projectId: project.projectId, path: project.path, userMessage: lastUser.content, recalled: items },
+          "L1 召回：注入命中记忆",
+        );
+      }
     }
 
     // 6. 上游配置（以设置为准，忽略客户端 model）
@@ -105,7 +115,7 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
     // 9. 旁路聚合 → final answer 时 L0 回流（fire-and-forget，不阻塞响应）
     result.aggregate
       .then((agg) => {
-        log.info(
+        log.debug(
           { projectId: project.projectId, textLen: agg.text.length, toolCalls: agg.toolCallCount, final: agg.final },
           "本轮聚合完成",
         );
@@ -156,7 +166,7 @@ function resolveProject(
   }
   try {
     const { project, revived } = deps.projects.upsertOnRequest(rawPath);
-    if (revived) log.info({ projectId: project.id, path: project.path }, "已删除项目被再次请求，级联恢复");
+    if (revived) log.debug({ projectId: project.id, path: project.path }, "已删除项目被再次请求，级联恢复");
     return { projectId: project.id, path: project.path };
   } catch (err) {
     return { projectId: null, path: "", error: `项目登记失败: ${String(err)}` };
@@ -186,6 +196,8 @@ function resolveSnapshot(
   }
 
   const snap = deps.snapshot.build({ projectId, projectPath, memoryProfile: projectId ? deps.l2.read(projectId) : "" });
+  // 新会话（或过期重建）：记录项目路径与注入内容全文，便于回放模型所见。
+  log.info({ projectId, path: projectPath, sessionKey, snapshot: snap }, "新会话开启：注入快照");
   if (existing) {
     deps.sessions.setSnapshot(sessionKey, snap);
     deps.sessions.touch(sessionKey, now);

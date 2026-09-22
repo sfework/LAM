@@ -110,6 +110,9 @@ export function bootstrap(): {
   const l1Store = new L1Store(handle.raw, handle.fts5Available, handle.vecAvailable);
   const l1Extractor = new L1Extractor(handle.raw, l1Store, settings);
   const l2 = new L2Refiner(handle.raw, l1Store, settings);
+  // 日志用：把 projectId 解析成磁盘路径（提取/凝练日志输出项目路径）。
+  l1Extractor.pathOf = (id) => projects.findById(id)?.path;
+  l2.pathOf = (id) => projects.findById(id)?.path;
   const recaller = new MemoryRecaller(l1Store, settings);
   const backfiller = new EmbeddingBackfiller(l1Store, settings);
   const skillExtractor = new SkillExtractor(handle.raw, assets, settings);

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { chatComplete, type LlmCallConfig, type LlmMessage, type LlmCallOptions } from "../llm/client.js";
-import { parseLlmJson } from "../utils/json.js";
+import { parseLlmJsonArray } from "../utils/json.js";
 import { newId } from "../infra/id.js";
 import { createLogger } from "../infra/logger.js";
 import {
@@ -35,6 +35,7 @@ interface LlmMemory {
   type?: unknown;
   priority?: unknown;
   source_message_ids?: unknown;
+  metadata?: unknown;
 }
 
 interface ConflictDecision {
@@ -44,6 +45,7 @@ interface ConflictDecision {
   merged_content?: unknown;
   merged_type?: unknown;
   merged_priority?: unknown;
+  merged_timestamps?: unknown;
 }
 
 export type LlmCall = (
@@ -51,6 +53,21 @@ export type LlmCall = (
   messages: LlmMessage[],
   opts?: LlmCallOptions,
 ) => Promise<string>;
+
+/** LLM token 消耗累加器（多次调用合并）。 */
+interface TokenUsage {
+  prompt: number;
+  completion: number;
+  total: number;
+}
+
+function usageRecorder(u: TokenUsage): LlmCallOptions["onUsage"] {
+  return (x) => {
+    u.prompt += x.promptTokens;
+    u.completion += x.completionTokens;
+    u.total += x.totalTokens;
+  };
+}
 
 /**
  * L1 两阶段提取管线（DESIGN §2.7，参考 l1-extractor + l1-dedup）：
@@ -62,6 +79,8 @@ export class L1Extractor {
   private readonly store: L1Store;
   private readonly settings: SettingsService;
   private readonly llmCall: LlmCall;
+  /** projectId → 项目磁盘路径（日志用，由装配方注入）。 */
+  pathOf: ((projectId: string) => string | undefined) | null = null;
 
   constructor(raw: DatabaseSync, store: L1Store, settings: SettingsService, llmCall: LlmCall = chatComplete) {
     this.raw = raw;
@@ -73,8 +92,9 @@ export class L1Extractor {
   /**
    * 对一批 L0 消息执行提取。
    * @param l0Ids pipeline_state 缓冲的 L0 记录 id
+   * @param sessionKey 来源会话（日志用，可选）
    */
-  async extract(projectId: string, l0Ids: string[], llm: LlmCallConfig): Promise<ExtractResult> {
+  async extract(projectId: string, l0Ids: string[], llm: LlmCallConfig, sessionKey?: string): Promise<ExtractResult> {
     const rows = this.raw
       .prepare(
         `SELECT id, role, content, created_at FROM mem_l0
@@ -94,15 +114,19 @@ export class L1Extractor {
       .get(projectId) as { last_scene_name: string | null } | undefined;
 
     // ── 阶段一：提取 ──
-    const segments = await this.runExtraction(llm, newOnes, bgOnes, prev?.last_scene_name ?? undefined);
-    if (!segments) return { extracted: 0, stored: 0, skipped: 0, lastSceneName: prev?.last_scene_name ?? null };
+    const usage: TokenUsage = { prompt: 0, completion: 0, total: 0 };
+    const segments = await this.runExtraction(llm, newOnes, bgOnes, prev?.last_scene_name ?? undefined, usage);
+    // segments === null 表示提取阶段失败（LLM 调用异常或返回非法 JSON），与"合法空产出 []"区分：
+    // 失败必须抛出，让调度器保留缓冲下轮重试，绝不静默丢弃整批对话（决策 72）。
+    if (!segments) throw new Error("L1 提取阶段失败：LLM 调用异常或返回非法 JSON");
 
     const minPriority = this.settings.getInt("extract_min_priority");
     const maxItems = this.settings.getInt("memory_extract_max_items");
-    const l1MaxChars = this.settings.getInt("l1_max_chars");
     const batchId = newId("bat");
 
-    const pending: { recordId: string; kind: L1Kind; content: string; priority: number; sceneName: string; sourceL0Ids: string[]; createdAt: number }[] = [];
+    const pending: { recordId: string; kind: L1Kind; content: string; priority: number; sceneName: string; sourceL0Ids: string[]; metadata: string; createdAt: number }[] = [];
+    // 批内去重：阶段二候选池在任何插入前一次性算好，同批重复内容互相不可见会双双落库，这里先按规范化内容去重（决策 72）。
+    const seen = new Set<string>();
     let lastSceneName: string | null = prev?.last_scene_name ?? null;
 
     for (const seg of segments) {
@@ -113,13 +137,13 @@ export class L1Extractor {
         if (pending.length >= maxItems) break;
         const content = typeof m.content === "string" ? m.content.trim() : "";
         if (!content) continue;
-        if (content.length > l1MaxChars) {
-          log.debug({ len: content.length, limit: l1MaxChars }, "L1 超颗粒度上限（保留入库，提取侧已提示拆分）");
-        }
         const kind = (m.type as string) ?? "";
         if (!isL1Kind(kind)) continue;
         const priority = typeof m.priority === "number" ? m.priority : 70;
         if (priority < minPriority) continue;
+        const dedupeKey = content.replace(/\s+/g, " ").toLowerCase();
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
         const sourceIds = Array.isArray(m.source_message_ids)
           ? (m.source_message_ids as unknown[]).map(String).filter((id) => l0Ids.includes(id))
           : [];
@@ -130,6 +154,7 @@ export class L1Extractor {
           priority,
           sceneName: sceneName || lastSceneName || "",
           sourceL0Ids: sourceIds,
+          metadata: normalizeMetadata(m.metadata),
           createdAt: Date.now(),
         });
       }
@@ -150,7 +175,7 @@ export class L1Extractor {
     let decisions: ConflictDecision[] = [];
     const hasPool = matches.some((m) => m.candidates.length > 0);
     if (hasPool) {
-      decisions = (await this.runConflictDetection(llm, matches)) ?? [];
+      decisions = (await this.runConflictDetection(llm, matches, usage)) ?? [];
     }
     const decMap = new Map(decisions.map((d) => [String(d.record_id), d]));
 
@@ -166,18 +191,38 @@ export class L1Extractor {
       const kindRaw = (action === "merge" || action === "update") && typeof d?.merged_type === "string" ? d.merged_type : p.kind;
       const kind = isL1Kind(kindRaw) ? kindRaw : p.kind;
       const prRaw = (action === "merge" || action === "update") && typeof d?.merged_priority === "number" ? d.merged_priority : p.priority;
+      // merge/update：时间戳并集（去重排序）写回 metadata，保留旧记忆的活动时间
+      const metadata =
+        action === "merge" || action === "update"
+          ? mergeTimestamps(
+              [p.metadata, ...targetIds.map((t) => this.store.get(t)?.metadata ?? "{}")],
+              Array.isArray(d?.merged_timestamps) ? (d!.merged_timestamps as unknown[]).map(String) : [],
+            )
+          : p.metadata;
 
       const id = this.store.applyDecision(
         projectId,
         { action, targetIds },
-        { kind, content, priority: prRaw, sceneName: p.sceneName || null, sourceL0Ids: p.sourceL0Ids, batchId, createdAt: p.createdAt },
+        { kind, content, priority: prRaw, sceneName: p.sceneName || null, sourceL0Ids: p.sourceL0Ids, metadata, batchId, createdAt: p.createdAt },
       );
       if (id) stored++;
       else skipped++;
     }
 
     this.updateSceneName(projectId, lastSceneName);
-    log.info({ projectId, extracted: pending.length, stored, skipped }, "L1 提取完成");
+    log.info(
+      {
+        projectId,
+        path: this.pathOf?.(projectId) ?? "",
+        sessionKey: sessionKey ?? "",
+        extracted: pending.length,
+        stored,
+        skipped,
+        memories: pending.map((p) => ({ kind: p.kind, priority: p.priority, content: p.content })),
+        tokens: usage,
+      },
+      "L1 提取完成（L0→L1）",
+    );
     return { extracted: pending.length, stored, skipped, lastSceneName };
   }
 
@@ -186,6 +231,7 @@ export class L1Extractor {
     newOnes: { id: string; role: "user" | "assistant"; content: string; created_at: number }[],
     bgOnes: { id: string; role: "user" | "assistant"; content: string; created_at: number }[],
     previousSceneName?: string,
+    usage?: TokenUsage,
   ): Promise<LlmSceneSegment[] | null> {
     const toMsg = (m: { id: string; role: "user" | "assistant"; content: string; created_at: number }): ExtractMessage => ({
       id: m.id,
@@ -207,17 +253,21 @@ export class L1Extractor {
             }),
           },
         ],
-        { json: true, temperature: 0.2 },
+        { json: true, temperature: 0.2, onUsage: usage ? usageRecorder(usage) : undefined },
       );
-      const parsed = parseLlmJson<LlmSceneSegment[]>(out);
-      return Array.isArray(parsed) ? parsed : null;
+      const parsed = parseLlmJsonArray<LlmSceneSegment>(out);
+      if (!parsed) {
+        log.warn({ raw: out.slice(0, 500), len: out.length }, "L1 提取返回非法 JSON（非数组）");
+        return null;
+      }
+      return parsed;
     } catch (err) {
       log.warn({ err: String(err) }, "L1 提取 LLM 调用失败");
       return null;
     }
   }
 
-  private async runConflictDetection(llm: LlmCallConfig, matches: ConflictMatch[]): Promise<ConflictDecision[] | null> {
+  private async runConflictDetection(llm: LlmCallConfig, matches: ConflictMatch[], usage?: TokenUsage): Promise<ConflictDecision[] | null> {
     try {
       const out = await this.llmCall(
         llm,
@@ -225,10 +275,14 @@ export class L1Extractor {
           { role: "system", content: getConflictSystemPrompt() },
           { role: "user", content: formatBatchConflictPrompt(matches) },
         ],
-        { json: true, temperature: 0.1 },
+        { json: true, temperature: 0.1, onUsage: usage ? usageRecorder(usage) : undefined },
       );
-      const parsed = parseLlmJson<ConflictDecision[]>(out);
-      return Array.isArray(parsed) ? parsed : null;
+      const parsed = parseLlmJsonArray<ConflictDecision>(out);
+      if (!parsed) {
+        log.warn({ raw: out.slice(0, 500), len: out.length }, "冲突检测返回非法 JSON（非数组），全部按 store 落库");
+        return null;
+      }
+      return parsed;
     } catch (err) {
       log.warn({ err: String(err) }, "冲突检测 LLM 调用失败，全部按 store 落库");
       return null;
@@ -245,6 +299,48 @@ export class L1Extractor {
 
 function candOf(r: L1Record): ConflictMatch["candidates"][number] {
   return { id: r.id, content: r.content, kind: r.kind, priority: r.priority, sceneName: r.sceneName, createdAt: r.createdAt };
+}
+
+/** 提取侧 metadata 归一化：仅保留对象，序列化为 JSON 字符串；非法/空 → "{}"。 */
+function normalizeMetadata(m: unknown): string {
+  if (!m || typeof m !== "object" || Array.isArray(m)) return "{}";
+  try {
+    return JSON.stringify(m);
+  } catch {
+    return "{}";
+  }
+}
+
+/**
+ * merge/update 时把 LLM 给的 merged_timestamps 并入各来源 metadata（新记忆 + 被替换旧记忆），
+ * 键做浅合并（旧键优先保留），时间戳去重排序后写入 timestamps 数组。
+ */
+function mergeTimestamps(sources: string[], merged: string[]): string {
+  const base: Record<string, unknown> = {};
+  for (const src of sources) {
+    try {
+      const parsed = JSON.parse(src || "{}");
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          if (k !== "timestamps" && base[k] === undefined) base[k] = v;
+        }
+      }
+    } catch {
+      /* 单条 metadata 损坏不影响其余来源 */
+    }
+  }
+  const prev: string[] = [];
+  for (const src of sources) {
+    try {
+      const parsed = JSON.parse(src || "{}") as { timestamps?: unknown };
+      if (Array.isArray(parsed?.timestamps)) prev.push(...(parsed.timestamps as unknown[]).map(String));
+    } catch {
+      /* 同上 */
+    }
+  }
+  const all = [...new Set([...prev, ...merged.filter((t) => !!t)])].sort();
+  if (all.length) base.timestamps = all;
+  return JSON.stringify(base);
 }
 
 const KIND_SET = new Set<string>(["persona", "episodic", "instruction", "fact", "method", "artifact"]);

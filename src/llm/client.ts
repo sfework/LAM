@@ -18,6 +18,8 @@ export interface LlmCallOptions {
   json?: boolean;
   timeoutMs?: number;
   temperature?: number;
+  /** 响应 usage 回调（token 消耗），供调用方记日志；不影响返回值形状。 */
+  onUsage?: (usage: { promptTokens: number; completionTokens: number; totalTokens: number }) => void;
 }
 
 /** base 可能带或不带 /v1，统一拼到 /chat/completions。 */
@@ -53,6 +55,14 @@ export async function chatComplete(
   }
   const json = (await res.json()) as {
     choices?: { message?: { content?: string } }[];
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
   };
+  if (opts.onUsage && json?.usage) {
+    opts.onUsage({
+      promptTokens: json.usage.prompt_tokens ?? 0,
+      completionTokens: json.usage.completion_tokens ?? 0,
+      totalTokens: json.usage.total_tokens ?? 0,
+    });
+  }
   return json?.choices?.[0]?.message?.content ?? "";
 }

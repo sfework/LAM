@@ -14,7 +14,7 @@ import { ExtractionScheduler } from "../src/memory/scheduler.js";
 import { SkillExtractor } from "../src/memory/skill-extractor.js";
 import { AssetsRepo } from "../src/assets/repo.js";
 import { tokenizeForFts, buildFtsQuery } from "../src/memory/tokenize.js";
-import { parseLlmJson } from "../src/utils/json.js";
+import { parseLlmJson, parseLlmJsonArray } from "../src/utils/json.js";
 import { joinChatUrl } from "../src/llm/client.js";
 import type { LlmCallConfig } from "../src/llm/client.js";
 
@@ -78,6 +78,26 @@ describe("parseLlmJson", () => {
   it("非法返回 null", () => {
     expect(parseLlmJson("no json here")).toBeNull();
     expect(parseLlmJson("")).toBeNull();
+  });
+});
+
+// ── parseLlmJsonArray ──
+
+describe("parseLlmJsonArray", () => {
+  it("正常数组原样返回", () => {
+    expect(parseLlmJsonArray('[{"a":1},{"b":2}]')).toEqual([{ a: 1 }, { b: 2 }]);
+  });
+  it("单裸对象归一化为数组（Qwen 单情境省略外层 []）", () => {
+    expect(parseLlmJsonArray('{"scene_name":"x","memories":[]}')).toEqual([
+      { scene_name: "x", memories: [] },
+    ]);
+  });
+  it("```json 包裹的单对象也归一化", () => {
+    expect(parseLlmJsonArray('```json\n{"a":1}\n```')).toEqual([{ a: 1 }]);
+  });
+  it("非法/空返回 null", () => {
+    expect(parseLlmJsonArray("no json here")).toBeNull();
+    expect(parseLlmJsonArray("")).toBeNull();
   });
 });
 
@@ -262,12 +282,104 @@ describe("L1Extractor", () => {
     expect(ctx.store.get(oldId)!.supersededBy).toBe(active[0]!.id);
   });
 
-  it("LLM 返回坏 JSON → 全部丢弃不崩", async () => {
+  it("LLM 返回坏 JSON → 抛异常（区别于合法空产出，交调度器保留缓冲重试）", async () => {
     const ctx = fresh();
     const l0Ids = seedL0(ctx, [["q", "a"]]);
     const extractor = new L1Extractor(ctx.raw, ctx.store, ctx.settings, async () => "not json at all");
+    await expect(extractor.extract(ctx.projectId, l0Ids, FAKE_LLM)).rejects.toThrow();
+  });
+
+  it("批内重复内容去重：同批两条相同记忆只落一条", async () => {
+    const ctx = fresh();
+    const l0Ids = seedL0(ctx, [["q", "a"]]);
+    const extractor = new L1Extractor(ctx.raw, ctx.store, ctx.settings, async () =>
+      JSON.stringify([
+        {
+          scene_name: "s",
+          message_ids: [],
+          memories: [
+            { content: "项目使用 pnpm", type: "fact", priority: 80, source_message_ids: [], metadata: {} },
+            { content: "  项目使用   pnpm  ", type: "fact", priority: 80, source_message_ids: [], metadata: {} },
+          ],
+        },
+      ]),
+    );
     const res = await extractor.extract(ctx.projectId, l0Ids, FAKE_LLM);
-    expect(res.extracted).toBe(0);
+    expect(res.extracted).toBe(1);
+    expect(ctx.store.listActive(ctx.projectId)).toHaveLength(1);
+  });
+
+  it("episodic metadata 时间字段落库", async () => {
+    const ctx = fresh();
+    const l0Ids = seedL0(ctx, [["昨天下午完成了数据库迁移", "好的"]]);
+    const extractor = new L1Extractor(ctx.raw, ctx.store, ctx.settings, async () =>
+      JSON.stringify([
+        {
+          scene_name: "我在和用户做数据库迁移",
+          message_ids: l0Ids,
+          memories: [
+            {
+              content: "用户于 2026-09-20 下午完成了数据库迁移",
+              type: "episodic",
+              priority: 85,
+              source_message_ids: [l0Ids[0]],
+              metadata: { activity_start_time: "2026-09-20T14:00:00+08:00", activity_end_time: "2026-09-20T16:00:00+08:00" },
+            },
+          ],
+        },
+      ]),
+    );
+    const res = await extractor.extract(ctx.projectId, l0Ids, FAKE_LLM);
+    expect(res.stored).toBe(1);
+    const meta = JSON.parse(ctx.store.listActive(ctx.projectId)[0]!.metadata) as Record<string, string>;
+    expect(meta.activity_start_time).toBe("2026-09-20T14:00:00+08:00");
+    expect(meta.activity_end_time).toBe("2026-09-20T16:00:00+08:00");
+  });
+
+  it("merge 时 merged_timestamps 并入 metadata（去重排序）", async () => {
+    const ctx = fresh();
+    const oldId = ctx.store.insert(ctx.projectId, {
+      kind: "episodic",
+      content: "用户于 2026-09-01 开始重构网关",
+      priority: 80,
+      sceneName: "重构",
+      sourceL0Ids: [],
+      metadata: JSON.stringify({ activity_start_time: "2026-09-01T09:00:00+08:00" }),
+      batchId: null,
+      createdAt: Date.now() - 1000,
+    });
+    const l0Ids = seedL0(ctx, [["网关重构完成了", "恭喜"]]);
+    const extractor = new L1Extractor(ctx.raw, ctx.store, ctx.settings, async (_cfg, msgs) => {
+      if (msgs[0]!.content.includes("冲突检测器")) {
+        const m = /record_id: (l1c_\w+)/.exec(msgs[1]!.content);
+        return JSON.stringify([
+          {
+            record_id: m?.[1] ?? "",
+            action: "merge",
+            target_ids: [oldId],
+            merged_content: "用户于 2026-09-01 开始重构网关，2026-09-20 完成",
+            merged_type: "episodic",
+            merged_priority: 90,
+            merged_timestamps: ["2026-09-01T09:00:00+08:00", "2026-09-20T18:00:00+08:00"],
+          },
+        ]);
+      }
+      return JSON.stringify([
+        {
+          scene_name: "重构",
+          message_ids: [],
+          memories: [{ content: "用户于 2026-09-20 完成网关重构", type: "episodic", priority: 80, source_message_ids: [], metadata: {} }],
+        },
+      ]);
+    });
+    const res = await extractor.extract(ctx.projectId, l0Ids, FAKE_LLM);
+    expect(res.stored).toBe(1);
+    const active = ctx.store.listActive(ctx.projectId);
+    expect(active).toHaveLength(1);
+    const meta = JSON.parse(active[0]!.metadata) as { activity_start_time?: string; timestamps?: string[] };
+    // 旧 metadata 键保留 + 时间戳并集去重排序
+    expect(meta.activity_start_time).toBe("2026-09-01T09:00:00+08:00");
+    expect(meta.timestamps).toEqual(["2026-09-01T09:00:00+08:00", "2026-09-20T18:00:00+08:00"]);
   });
 });
 
@@ -351,35 +463,95 @@ describe("L2Refiner", () => {
     const ctx = fresh();
     ctx.store.insert(ctx.projectId, { kind: "fact", content: "项目是 TS Node 服务", priority: 80, sceneName: "s", sourceL0Ids: [], batchId: null, createdAt: Date.now() });
     const refiner = new L2Refiner(ctx.raw, ctx.store, ctx.settings, async () => "# 项目画像\n\n技术栈：TypeScript + Node。");
-    const v = await refiner.refine(ctx.projectId, FAKE_LLM);
-    expect(v).toBe(1);
+    const r = await refiner.refine(ctx.projectId, FAKE_LLM);
+    expect(r).toEqual({ status: "stored", version: 1 });
     expect(ctx.raw.prepare("SELECT version FROM mem_l2 WHERE project_id = ?").get(ctx.projectId)).toMatchObject({ version: 1 });
   });
 
-  it("增量更新 version 自增；markdown 围栏剥离", async () => {
+  it("增量：只喂上次凝练后新增的 L1，version 自增；markdown 围栏剥离", async () => {
     const ctx = fresh();
-    ctx.store.insert(ctx.projectId, { kind: "fact", content: "记忆一", priority: 80, sceneName: "s", sourceL0Ids: [], batchId: null, createdAt: Date.now() });
+    ctx.store.insert(ctx.projectId, { kind: "fact", content: "记忆一", priority: 80, sceneName: "s", sourceL0Ids: [], batchId: null, createdAt: 1000 });
+    const prompts: string[] = [];
+    const r1 = new L2Refiner(ctx.raw, ctx.store, ctx.settings, async (_c, msgs) => {
+      prompts.push(msgs[1]!.content);
+      return "画像v1";
+    });
+    await r1.refine(ctx.projectId, FAKE_LLM);
+    // 无新增 L1 → 跳过且不调 LLM
+    const before = prompts.length;
+    const rSkip = await r1.refine(ctx.projectId, FAKE_LLM);
+    expect(rSkip.status).toBe("skipped");
+    expect(prompts.length).toBe(before);
+    // 新增 L1 后增量：提示词只含新记忆
+    ctx.store.insert(ctx.projectId, { kind: "fact", content: "记忆二", priority: 80, sceneName: "s", sourceL0Ids: [], batchId: null, createdAt: Date.now() + 5000 });
+    const r2 = new L2Refiner(ctx.raw, ctx.store, ctx.settings, async (_c, msgs) => {
+      prompts.push(msgs[1]!.content);
+      return "```markdown\n画像v2\n```";
+    });
+    const v = await r2.refine(ctx.projectId, FAKE_LLM);
+    expect(v).toEqual({ status: "stored", version: 2 });
+    expect(r1.read(ctx.projectId)).toBe("画像v2");
+    expect(prompts[prompts.length - 1]).toContain("记忆二");
+    expect(prompts[prompts.length - 1]).not.toContain("记忆一");
+  });
+
+  it("增量：水位由调用方控制（手动保存画像不污染水位）", async () => {
+    const ctx = fresh();
+    ctx.store.insert(ctx.projectId, { kind: "fact", content: "记忆一", priority: 80, sceneName: "s", sourceL0Ids: [], batchId: null, createdAt: 1000 });
     const r1 = new L2Refiner(ctx.raw, ctx.store, ctx.settings, async () => "画像v1");
     await r1.refine(ctx.projectId, FAKE_LLM);
-    const r2 = new L2Refiner(ctx.raw, ctx.store, ctx.settings, async () => "```markdown\n画像v2\n```");
-    const v = await r2.refine(ctx.projectId, FAKE_LLM);
-    expect(v).toBe(2);
-    expect(r1.read(ctx.projectId)).toBe("画像v2");
+    // 模拟：画像生成后新增 L1，随后管理端手动保存画像（updated_at 被推到更晚，晚于该 L1）
+    ctx.store.insert(ctx.projectId, { kind: "fact", content: "记忆二", priority: 80, sceneName: "s", sourceL0Ids: [], batchId: null, createdAt: Date.now() - 1000 });
+    r1.save(ctx.projectId, "手工编辑的画像");
+    // 按默认水位（画像 updated_at）无"新增"→ skipped
+    expect((await r1.refine(ctx.projectId, FAKE_LLM)).status).toBe("skipped");
+    // 调度器传显式水位（上次凝练时刻，早于新 L1）→ 正常增量凝练
+    const res = await r1.refine(ctx.projectId, FAKE_LLM, "incremental", 1500);
+    expect(res).toEqual({ status: "stored", version: 3 });
+  });
+
+  it("凝练结果与现有画像一致 → 不写库不涨版本（unchanged）", async () => {
+    const ctx = fresh();
+    ctx.store.insert(ctx.projectId, { kind: "fact", content: "记忆一", priority: 80, sceneName: "s", sourceL0Ids: [], batchId: null, createdAt: 1000 });
+    const r1 = new L2Refiner(ctx.raw, ctx.store, ctx.settings, async () => "稳定画像");
+    await r1.refine(ctx.projectId, FAKE_LLM);
+    const vBefore = r1.readMeta(ctx.projectId).version;
+    ctx.store.insert(ctx.projectId, { kind: "fact", content: "记忆二", priority: 80, sceneName: "s", sourceL0Ids: [], batchId: null, createdAt: Date.now() + 5000 });
+    const r = await r1.refine(ctx.projectId, FAKE_LLM); // LLM 复述原画像
+    expect(r).toEqual({ status: "unchanged", version: vBefore });
+    expect(r1.readMeta(ctx.projectId).version).toBe(vBefore);
+    expect(r1.read(ctx.projectId)).toBe("稳定画像");
+  });
+
+  it("full 模式忽略水位全量重凝练", async () => {
+    const ctx = fresh();
+    ctx.store.insert(ctx.projectId, { kind: "fact", content: "记忆一", priority: 80, sceneName: "s", sourceL0Ids: [], batchId: null, createdAt: 1000 });
+    const r1 = new L2Refiner(ctx.raw, ctx.store, ctx.settings, async () => "画像v1");
+    await r1.refine(ctx.projectId, FAKE_LLM);
+    const prompts: string[] = [];
+    const r2 = new L2Refiner(ctx.raw, ctx.store, ctx.settings, async (_c, msgs) => {
+      prompts.push(msgs[1]!.content);
+      return "画像v2";
+    });
+    const r = await r2.refine(ctx.projectId, FAKE_LLM, "full");
+    expect(r).toEqual({ status: "stored", version: 2 });
+    expect(prompts[0]).toContain("记忆一"); // 无新增也全量喂
   });
 
   it("无活跃 L1 时跳过", async () => {
     const ctx = fresh();
     const refiner = new L2Refiner(ctx.raw, ctx.store, ctx.settings, async () => "不该被调用");
-    expect(await refiner.refine(ctx.projectId, FAKE_LLM)).toBe(0);
+    expect(await refiner.refine(ctx.projectId, FAKE_LLM)).toEqual({ status: "skipped", version: 0 });
   });
 
-  it("LLM 空返回不覆写", async () => {
+  it("LLM 空返回不覆写（failed）", async () => {
     const ctx = fresh();
-    ctx.store.insert(ctx.projectId, { kind: "fact", content: "x y", priority: 80, sceneName: "s", sourceL0Ids: [], batchId: null, createdAt: Date.now() });
+    ctx.store.insert(ctx.projectId, { kind: "fact", content: "x y", priority: 80, sceneName: "s", sourceL0Ids: [], batchId: null, createdAt: 1000 });
     const r1 = new L2Refiner(ctx.raw, ctx.store, ctx.settings, async () => "好画像");
     await r1.refine(ctx.projectId, FAKE_LLM);
+    ctx.store.insert(ctx.projectId, { kind: "fact", content: "a b", priority: 80, sceneName: "s", sourceL0Ids: [], batchId: null, createdAt: Date.now() + 5000 });
     const r2 = new L2Refiner(ctx.raw, ctx.store, ctx.settings, async () => "   ");
-    expect(await r2.refine(ctx.projectId, FAKE_LLM)).toBe(0);
+    expect(await r2.refine(ctx.projectId, FAKE_LLM)).toEqual({ status: "failed", version: 1 });
     expect(r2.read(ctx.projectId)).toBe("好画像");
   });
 });

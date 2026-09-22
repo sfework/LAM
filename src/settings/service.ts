@@ -50,7 +50,7 @@ export class SettingsService {
         this.cache.set(def.key, def.defaultValue);
       }
     }
-    log.info({ count: this.cache.size }, "设置已载入（缺失项回填默认值）");
+    log.debug({ count: this.cache.size }, "设置已载入（缺失项回填默认值）");
   }
 
   /** 读取强类型值（热更新：每次读缓存，缓存随写入实时更新）。 */
@@ -125,7 +125,7 @@ export class SettingsService {
       .run(key, value, now);
     this.cache.set(key, value);
     this.emit(key, parseSettingValue(def, value));
-    log.info({ key, value }, "设置已热更新");
+    log.debug({ key, value }, "设置已热更新");
     return { key, value, updatedAt: now };
   }
 

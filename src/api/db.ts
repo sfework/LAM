@@ -29,7 +29,7 @@ export function createDbRouter(raw: DatabaseSync) {
         raw.exec("PRAGMA wal_checkpoint(TRUNCATE);");
         raw.exec(`VACUUM INTO '${file.replace(/'/g, "''")}';`);
         const size = statSync(file).size;
-        log.info({ file, size }, "数据库备份完成");
+        log.debug({ file, size }, "数据库备份完成");
         return { path: file, sizeBytes: size, createdAt: Date.now() };
       } catch (err) {
         log.error({ err: String(err) }, "数据库备份失败");
@@ -71,7 +71,7 @@ export function createDbRouter(raw: DatabaseSync) {
       } catch (err) {
         throw new ApiError(500, "delete_failed", String(err));
       }
-      log.info({ full }, "备份已删除");
+      log.debug({ full }, "备份已删除");
       return { deleted: true };
     },
   });

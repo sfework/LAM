@@ -18,6 +18,7 @@
     "test:watch": "vitest",
     "sim": "node scripts/simulate-usage.mjs",
     "bench:recall": "node --import tsx --liftoff-only scripts/bench-recall.mjs",
+    "test:extract": "node --import tsx --liftoff-only scripts/test-extract.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts"
   },

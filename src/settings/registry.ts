@@ -44,6 +44,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   // ── L1 条目与召回 ──
   { key: "l1_max_chars", type: "int", defaultValue: "200", min: 20, max: 2000, description: "单条 L1 字符上限，提取时强制拆分" },
   { key: "l1_recall_enabled", type: "bool", defaultValue: "true", description: "每轮 L1 动态召回开关" },
+  { key: "l1_recall_query_turns", type: "int", defaultValue: "3", min: 1, max: 10, description: "召回检索词拼接最近 N 条 user 消息（assistant 不参与，防记忆复述污染检索词）" },
   { key: "l1_recall_top_k", type: "int", defaultValue: "5", min: 1, max: 50, description: "每轮召回条数上限" },
   { key: "l1_recall_max_chars", type: "int", defaultValue: "1500", min: 0, max: 20000, description: "召回块字符上限" },
   { key: "l1_recall_max_chars_per_item", type: "int", defaultValue: "200", min: 0, max: 2000, description: "单条召回行字符上限，超长截断保留头部（0=不限制）" },

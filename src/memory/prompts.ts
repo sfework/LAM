@@ -1,6 +1,7 @@
 /**
  * 记忆提取提示词（移植自参考项目 MemoryCore/src/core/prompts 的 chat 模式，
- * 按本项目改造：个人本地场景、L1 小颗粒度硬约束、kind 体系合并原 L1+L2 语义）。
+ * 按本项目改造：个人本地场景、kind 体系合并原 L1+L2 语义；
+ * 归纳合并 / 情境命名 / metadata 时间字段与参考项目保持一致）。
  */
 
 import { localDateTimeStr } from "../infra/localtime.js";
@@ -23,17 +24,15 @@ export const EXTRACT_SYSTEM_PROMPT = `你是"情境切分与记忆提取专家"�
 ## 任务一：情境切分
 分析【待提取的新消息】，结合【上一个情境】，判断情境：
 - 无明显切换则沿用上一个情境；话题转变或提出独立新目标则切换；一段对话可有多个情境。
-- 命名："我在做xxx（活动）"，约 30-50 字符，单句。
+- 命名："我（AI）在和xxx（用户身份）做xxx（目标活动）"，约 30-50 字符，单句，全局唯一。
 
 ## 任务二：记忆提取（仅从【待提取的新消息】提取）
-
-【小颗粒度硬性要求】一条记忆只表达**一个原子信息**；超过 ${'${L1_MAX_CHARS}'} 字符必须拆成多条。
-长内容/流程/场景拆成多条关联条目（同批输出即可，系统会自动关联溯源）。
 
 【通用原则】
 1. 宁缺毋滥：过滤寒暄、一次性工具请求、临时指令。
 2. 独立完整：跳出当前对话依然成立，无上下文也能看懂；主体用"用户"或项目名。
-3. 时间：尽量基于消息 timestamp 推算绝对时间。
+3. 归纳合并：强关联或因果关系的多条消息，必须合并为一条完整记忆，不可碎片化。
+4. 时间：尽量基于消息 timestamp 推算绝对时间。
 
 【类型（type，六选一）】
 - persona：用户稳定属性/偏好/技能/习惯（"用户喜欢/习惯…"）。priority 80-100 核心，50-70 一般，<50 丢弃。
@@ -52,7 +51,7 @@ export const EXTRACT_SYSTEM_PROMPT = `你是"情境切分与记忆提取专家"�
     "message_ids": ["属于该情境的消息ID"],
     "memories": [
       {
-        "content": "单条原子记忆陈述",
+        "content": "完整、独立的记忆陈述",
         "type": "persona|episodic|instruction|fact|method|artifact",
         "priority": 80,
         "source_message_ids": ["消息ID"],
@@ -61,10 +60,15 @@ export const EXTRACT_SYSTEM_PROMPT = `你是"情境切分与记忆提取专家"�
     ]
   }
 ]
+
+metadata 字段说明：
+- episodic 类型：如能确定活动时间，填入 {"activity_start_time": "ISO8601", "activity_end_time": "ISO8601"}。
+- 其他类型或无法确定时间：输出空对象 {}。
+
 无有意义记忆时也输出情境分割结果，memories 为空数组。`;
 
-export function getExtractSystemPrompt(l1MaxChars: number): string {
-  return EXTRACT_SYSTEM_PROMPT.replace("${L1_MAX_CHARS}", String(l1MaxChars));
+export function getExtractSystemPrompt(_l1MaxChars?: number): string {
+  return EXTRACT_SYSTEM_PROMPT;
 }
 
 export function formatExtractionPrompt(params: {

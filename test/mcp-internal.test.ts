@@ -206,10 +206,10 @@ describe("MCP 薄壳端到端（真实 HTTP + InMemory client）", () => {
     return client;
   }
 
-  it("listTools 返回全部工具定义", async () => {
+  it("listTools 返回全部工具定义（list 工具已移除，决策 70）", async () => {
     const client = await mcpClient();
     const tools = await client.listTools();
-    expect(tools.tools.length).toBeGreaterThanOrEqual(30);
+    expect(tools.tools.length).toBeGreaterThanOrEqual(27);
     const toolNames = tools.tools.map((t) => t.name);
     expect(toolNames).toContain("memory_search");
     expect(toolNames).toContain("knowledge_read");
@@ -219,17 +219,10 @@ describe("MCP 薄壳端到端（真实 HTTP + InMemory client）", () => {
     expect(toolNames).toContain("sql_query_sqlite");
     expect(toolNames).toContain("sql_list_tables_mysql");
     expect(toolNames).toContain("sql_describe_table_sqlserver");
-    await client.close();
-  });
-
-  it("callTool knowledge_list 经 /mcp → /internal 取数", async () => {
-    const base = `http://localhost:${port}`;
-    await fetch(`${base}/api/knowledge/create`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "MCP可见知识", description: "d", body: "b", scope: "global", enabled: true }) });
-
-    const client = await mcpClient();
-    const res = await client.callTool({ name: "knowledge_list", arguments: { project_path: "e:/mcp-test" } });
-    const text = (res.content as { text: string }[])[0]!.text;
-    expect(text).toContain("MCP可见知识");
+    // knowledge/agent/skill 的 list 工具不再开放（清单已注入系统提示，按 id read 即可）
+    expect(toolNames).not.toContain("knowledge_list");
+    expect(toolNames).not.toContain("agent_list");
+    expect(toolNames).not.toContain("skill_list");
     await client.close();
   });
 

@@ -1,0 +1,1 @@
+ALTER TABLE `denoise_rules` ADD `extract` integer DEFAULT false NOT NULL;

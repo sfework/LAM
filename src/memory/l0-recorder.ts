@@ -138,7 +138,7 @@ export class L0Recorder {
 
       this.raw.exec("COMMIT");
       if (insertedIds.length) {
-        log.info({ projectId, sessionKey, count: insertedIds.length, turnSeq: seq - 1 }, "L0 回流完成");
+        log.debug({ projectId, sessionKey, count: insertedIds.length, turnSeq: seq - 1 }, "L0 回流完成");
       }
       return insertedIds;
     } catch (err) {

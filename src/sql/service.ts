@@ -63,7 +63,7 @@ export class SqlService {
 
     const truncated = rows.length > maxRows;
     const kept = truncated ? rows.slice(0, maxRows) : rows;
-    if (truncated) log.info({ dialect, total: rows.length, maxRows }, "SQL 查询结果被截断");
+    if (truncated) log.debug({ dialect, total: rows.length, maxRows }, "SQL 查询结果被截断");
     return { rows: kept.map((r) => normalizeValue(r)), rowCount: rows.length, truncated, maxRows };
   }
 
