@@ -1,7 +1,9 @@
 /**
- * MCP 薄壳的工具定义（DESIGN §3、决策 9：工具自描述，无额外注入文案）。
+ * MCP 薄壳的工具定义（DESIGN §3、决策 9：工具自描述）。
  * 每个工具映射到主服务 /internal/* 的一个只读端点；project_path 作为参数由模型回传
  * （注入块里已带项目路径，见 DESIGN §2.6）。
+ * codegraph 系列的描述采用引导式文案（仿参考项目）：explore 立为首选、其余工具向它收敛，
+ * 并给出行动触发语（重构前用 impact 等），配合快照 <codegraph> 节提升选用率。
  */
 
 export interface ToolDef {
@@ -149,7 +151,7 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "codegraph_search",
     description:
-      "在项目代码符号索引中搜索（FTS 前缀 + camelCase 段词 + 子串兜底，大小写不敏感）。支持 kind:/lang:/path:/name: 字段过滤（如 \"kind:class path:controller auth\"）。返回符号 id/名称/类型/所在文件/行号。用于定位某个函数、类、方法等的具体位置。索引构建中会返回进度提示，可稍后重试。",
+      "按名称快速搜索项目代码符号，只返回位置（id/名称/类型/文件/行号，不含源码）。FTS 前缀 + camelCase 段词 + 子串兜底，大小写不敏感；支持 kind:/lang:/path:/name: 字段过滤（如 \"kind:class path:controller auth\"）。想直接了解符号的上下文/调用关系，请改用 codegraph_explore。索引构建中会返回进度提示，可稍后重试。",
     inputSchema: {
       type: "object",
       properties: {
@@ -165,7 +167,7 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "codegraph_node",
     description:
-      "查看单个代码符号的详情（文件、行范围）及其直接调用方/被调方。用 id（来自 codegraph_search）精确定位，或用 name（需唯一）。",
+      "【explore 之后的次选】查看单个符号的详情（文件、行范围）及其直接调用方/被调方。用 id（来自 codegraph_search）精确定位，或用 name（需唯一）。需要多个相关符号或完整流程时请用 codegraph_explore。",
     inputSchema: {
       type: "object",
       properties: {
@@ -180,7 +182,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     name: "codegraph_callers",
-    description: "列出调用指定符号的其他符号（直接调用方）。用 id 或唯一 name 定位符号。",
+    description: "列出调用指定符号的其他符号（直接调用方）。想看完整调用流程，请改用 codegraph_explore。用 id 或唯一 name 定位符号。",
     inputSchema: {
       type: "object",
       properties: {
@@ -196,7 +198,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     name: "codegraph_callees",
-    description: "列出指定符号调用的其他符号（被调方）。用 id 或唯一 name 定位符号。",
+    description: "列出指定符号调用的其他符号（被调方）。想看完整调用流程，请改用 codegraph_explore。用 id 或唯一 name 定位符号。",
     inputSchema: {
       type: "object",
       properties: {
@@ -213,7 +215,7 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "codegraph_impact",
     description:
-      "分析修改某符号的影响面：沿依赖边（调用/引用/继承/实现/实例化/类型引用）反向 BFS 若干层，列出受影响的符号集合。改签名/删函数前评估波及范围用。用 id 或唯一 name 定位符号，depth 控制层数（默认 2，上限 5）。",
+      "【重构前先用它】分析修改某符号的影响面：沿依赖边（调用/引用/继承/实现/实例化/类型引用）反向 BFS 若干层，列出受影响的符号集合。改签名/删函数前评估波及范围用——即使已在改代码，这类结构问题仍该用它。用 id 或唯一 name 定位符号，depth 控制层数（默认 2，上限 5）。",
     inputSchema: {
       type: "object",
       properties: {
@@ -230,7 +232,7 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "codegraph_explore",
     description:
-      "综合探索：给定符号（id/name）返回其详情、调用方、被调方与同文件兄弟符号；给定 file 路径则返回该文件内的全部符号概览。适合快速了解某处代码的上下文。",
+      "【首选工具】了解代码区域一次调用给全：给定符号（id/name）返回其详情、调用方、被调方与同文件兄弟符号；给定 file 路径则返回该文件内的全部符号概览。优先于多轮 search+node+callers 拼装。注意：返回的是符号上下文而非源码原文，需要某段代码此刻的精确内容（按行编辑/未提交改动）仍以 read_file 为准。",
     inputSchema: {
       type: "object",
       properties: {
@@ -247,7 +249,7 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "codegraph_files",
     description:
-      "列出项目已索引的文件（可按路径子串过滤），或对单文件返回其符号清单（with_symbols=true）。用于了解项目结构与文件内容。",
+      "列出项目已索引的文件（可按路径子串过滤），或对单文件返回其符号清单（with_symbols=true）。了解项目结构比 Glob 更快、且带符号数。",
     inputSchema: {
       type: "object",
       properties: {
@@ -262,7 +264,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     name: "codegraph_status",
-    description: "查询项目代码索引状态（pending/indexing/ready/failed）与进度（已索引文件/总文件、符号数）。其他 codegraph 工具返回进度提示时，用它判断何时可查。",
+    description: "索引健康检查（pending/indexing/ready/failed 与文件/符号进度）。除非排查 codegraph 为何不可用，一般不需要；其他 codegraph 工具返回进度提示时用它判断何时可查。",
     inputSchema: {
       type: "object",
       properties: { project_path: PROJECT_PATH_PROP },

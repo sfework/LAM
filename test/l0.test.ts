@@ -35,6 +35,7 @@ function l0Rows(raw: DatabaseSync, projectId: string) {
 describe("sanitize", () => {
   it("剥离成对注入标签", () => {
     expect(stripInjectionTags("hi\n<prompts>x</prompts>\n<project>path: e:/p</project>")).toBe("hi");
+    expect(stripInjectionTags("hi\n<codegraph>\n- 判据\n</codegraph>")).toBe("hi");
   });
   it("剥离未闭合注入残留", () => {
     expect(stripInjectionTags("hi\n<knowledge>\n- a：b")).toBe("hi");

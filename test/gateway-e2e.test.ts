@@ -118,6 +118,9 @@ describe("gateway e2e", () => {
     expect(msgs[0]!.content).toContain("You are helpful.");
     expect(msgs[0]!.content).toContain("<project>");
     expect(msgs[0]!.content).toContain("path: d:/work/p");
+    // CodeGraph 使用判据节（playbook）随快照注入
+    expect(msgs[0]!.content).toContain("<codegraph>");
+    expect(msgs[0]!.content).toContain("codegraph_explore");
   });
 
   it("同会话第二轮复用快照（system 注入字节一致）", async () => {

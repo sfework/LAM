@@ -7,7 +7,7 @@ import { messageText } from "../gateway/protocol.js";
  */
 
 /** 网关注入的所有标签节（快照 + 召回块），入库前整段剥离。 */
-const INJECTION_TAGS = ["prompts", "knowledge", "agents", "skills", "memory", "project", "recalled"] as const;
+const INJECTION_TAGS = ["prompts", "knowledge", "agents", "skills", "memory", "project", "codegraph", "recalled"] as const;
 
 export function stripInjectionTags(text: string): string {
   let out = text;
