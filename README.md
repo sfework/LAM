@@ -170,10 +170,13 @@ MCP Server 挂在同一端口：**`http://localhost:8790/mcp`**（Streamable HTT
 
 **解析优先级**：`x-project-path` header > 消息正文兜底解析。
 
-- **兜底解析**：面向无法携带自定义 header 的客户端（如 BYOK 模式的 VS Code 系），网关会扫描请求体：
-  1. 优先在 `<workspace_info>...</workspace_info>` 段内找行首盘符路径（`- d:\Work\Proj` 形式，以闭合标签收口，不会越界扫到正文）；
-  2. 该段缺失时，仅在 **system 消息**内按行首 `- <盘符路径>` 兜底；
-  3. **不扫 user / tool 消息**——其内容常含目录列表等 `- C:\...` 文本，纳入扫描会误登记垃圾项目。
+- **兜底解析**：面向无法携带自定义 header 的客户端（BYOK 模式的 VS Code 系、pi 等 CLI），网关按以下优先级扫描请求体：
+  1. `<workspace_info>...</workspace_info>` 段内行首盘符路径（VS Code Copilot 自动注入，`- d:\Work\Proj` 形式，以闭合标签收口，不会越界扫到正文）；
+  2. `<cwd>` 段（pi v1.x 系统提示固定渲染，如 `<cwd>E:/Code/LAM</cwd>`，反斜杠已转正斜杠）；
+  3. `Current working directory: <path>` 行（pi 旧版文案与 SSH/Gondolin 扩展格式）；
+  4. 指令消息内行首 `- <盘符路径>` 兜底。
+  其中 2–4 仅扫 **system 消息**（含其别名 `developer`——网关协议层已统一归一为 system，pi 的 reasoning 模型即以 developer 角色发送指令）。**不扫 user / tool 消息**——其内容常含目录列表等 `- C:\...` 文本，纳入扫描会误登记垃圾项目。
+- **已验证接入方式**：VS Code Copilot BYOK（零配置，靠 `<workspace_info>` 自动识别）；pi（`models.json` 配 `baseUrl` 指向网关即可，靠 `<cwd>` 段识别；注意模型 `reasoning: true` 时 pi 以 developer 角色发送，网关已兼容）。
 - **规范化**：路径统一转小写、分隔符归一为 `/`、去除结尾多余斜杠后比对——`D:\Work\Demo`、`d:\work\demo\`、`d:/work/demo` 视为同一项目（Windows 大小写不敏感）。
 - **MCP 工具的 `project_path` 参数**：网关注入块末尾带有 `<project> path: ...` 段，模型调用按项目隔离的工具时原样回传即可；同一规范化实现保证与网关注册的项目一致。
 - 首次出现的合法路径会自动登记为项目；项目软删后再次收到其请求会自动恢复（连同其记忆/索引）。

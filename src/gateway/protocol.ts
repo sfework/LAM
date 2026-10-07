@@ -54,12 +54,21 @@ export function firstUserText(messages: readonly ChatMessage[]): string {
   return "";
 }
 
+/**
+ * 指令角色归一：OpenAI 新协议用 "developer" 作为 "system" 的别名
+ * （pi 等 reasoning 模型客户端会发 role:"developer"）。归一后除噪/注入/
+ * 路径解析/L0 回流全管线按 system 处理，转发上游也是标准 system。
+ */
+function normalizeInstructionRole(m: ChatMessage): ChatMessage {
+  return m.role === "developer" ? { ...m, role: "system" } : m;
+}
+
 export const chatCompletionsAdapter: ProtocolAdapter = {
   id: "chat-completions",
   parse(body) {
     const { model, messages, stream, ...extra } = body;
     return {
-      messages: (Array.isArray(messages) ? messages : []) as ChatMessage[],
+      messages: (Array.isArray(messages) ? messages : []).map(normalizeInstructionRole) as ChatMessage[],
       model: typeof model === "string" ? model : "",
       stream: stream === true,
       extra,

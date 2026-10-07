@@ -162,6 +162,32 @@ function resolveProject(
   let rawPath = c.req.header("x-project-path") ?? null;
   if (!rawPath || !normalizeProjectPath(rawPath)) rawPath = parseWorkspacePath(body);
   if (!rawPath || !normalizeProjectPath(rawPath)) {
+    // 诊断日志：记录消息角色、指令消息开头、正文中所有含盘符的行与首条 user 片段，
+    // 便于适配新客户端的提示词格式（一次复现即可定位路径实际所在位置/写法）。
+    const msgs = Array.isArray(body.messages) ? (body.messages as ChatMessage[]) : [];
+    const textOf = (m: ChatMessage): string =>
+      typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "").slice(0, 4000);
+    const pathLines: string[] = [];
+    for (const m of msgs) {
+      for (const line of textOf(m).split(/\r?\n/)) {
+        if (/[a-zA-Z]:[\\/]/.test(line)) {
+          pathLines.push(`[${m.role}] ${line.trim().slice(0, 160)}`);
+          if (pathLines.length >= 15) break;
+        }
+      }
+      if (pathLines.length >= 15) break;
+    }
+    log.warn(
+      {
+        roles: msgs.map((m) => String((m as { role?: unknown }).role)).join(","),
+        instruction: msgs
+          .filter((m) => m.role === "system" || m.role === "developer")
+          .map((m) => (typeof m.content === "string" ? m.content.slice(0, 400) : "[blocks]")),
+        pathLines,
+        firstUser: textOf(msgs.find((m) => m.role === "user") ?? {}).slice(0, 300),
+      },
+      "项目路径解析失败：请求正文快照",
+    );
     return { projectId: null, path: "", error: "无法确定项目路径（缺 x-project-path 且正文无法解析）" };
   }
   try {
