@@ -13,7 +13,6 @@
     "@douyinfe/semi-icons": "^2.103.0",
     "@douyinfe/semi-ui": "^2.103.0",
     "@sfework/common": "^1.0.0",
-    "d3-force": "^3.0.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-router-dom": "^7.18.3"

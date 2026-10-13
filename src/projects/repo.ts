@@ -91,7 +91,7 @@ export class ProjectRepo {
     return { project: this.findById(existing.id)!, revived: false };
   }
 
-  /** 软删项目 + 级联软删其记忆、project 知识、CodeGraph 数据。 */
+  /** 软删项目 + 级联软删其记忆、project 知识。 */
   softDelete(id: string): boolean {
     const p = this.findById(id);
     if (!p) return false;
@@ -119,9 +119,7 @@ export class ProjectRepo {
   /**
    * 更新项目：改名（name）与/或换目录（path，内部规范化）。
    * - 换目录：规范化后校验唯一键不与其他项目冲突（含软删项，避免恢复时撞车）；
-   * - 记忆/CodeGraph 数据按 project_id 关联，换目录不动这些数据；
-   *   但 watcher 监听的是绝对根路径，CodeGraph 索引 path 是相对根路径——
-   *   换目录后由调用方（API 层）触发 CodeGraphService.relocate 停旧监听并重建。
+   * - 记忆数据按 project_id 关联，换目录不动这些数据。
    * 无任何可更新字段时抛错；项目不存在返回 undefined。
    */
   update(id: string, patch: { name?: string; path?: string }): ProjectRow | undefined {
@@ -182,7 +180,6 @@ export class ProjectRepo {
     run("mem_l1", "");
     run("mem_l2", "");
     run("knowledge", " AND scope = 'project'");
-    // CodeGraph（决策 67）：图数据外置于 {DATA_DIR}/codegraph/，gateway.db 不再有 cg_* 级联表；
-    // 软删仅停激活（CodeGraphService.deactivate），恢复时重新激活，索引库原地保留。
+    // （CodeGraph 已移除：不再有 cg_* 级联表，图数据外置目录也不再维护。）
   }
 }

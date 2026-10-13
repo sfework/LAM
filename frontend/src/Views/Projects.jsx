@@ -7,7 +7,7 @@ import Net from '../Common/Net';
 /**
  * 项目页（/api/projects）：项目由网关请求自动登记，无手工新增。
  * 列：名称 / 路径 / 最近活跃 / 操作（编辑改名或换目录、软删）。软删后再次请求该路径会自动恢复。
- * 换目录：记忆按 project_id 保留；CodeGraph 索引（相对旧根失效）由后端停旧监听并在新根重建。
+ * 换目录：记忆按 project_id 保留。
  */
 function getTableColumns(view) {
     return [

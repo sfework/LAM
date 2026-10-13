@@ -15,7 +15,6 @@ import { L0Recorder } from "../src/memory/l0-recorder.js";
 import { L1Store } from "../src/memory/l1-store.js";
 import { L2Refiner } from "../src/memory/l2-refiner.js";
 import { MemoryRecaller } from "../src/memory/recall.js";
-import { CodeGraphService } from "../src/codegraph/service.js";
 import { SqlService } from "../src/sql/service.js";
 import { createApp, type AppDeps } from "../src/server.js";
 
@@ -68,12 +67,10 @@ function makeApp() {
   const l1Store = new L1Store(raw, true, false);
   const l2 = new L2Refiner(raw, l1Store, settings);
   const recaller = new MemoryRecaller(l1Store, settings);
-  const codegraph = new CodeGraphService(raw, settings, projects);
-  settings.set("codegraph_enabled", "false"); // 测试不启动 watcher/索引
   const deps: AppDeps = {
-    api: { models, settings, projects, denoise, assets, codegraph, l0, l1: l1Store, l2, raw },
-    gateway: { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller, codegraph },
-    internal: { projects, assets, l1: l1Store, l0, l2, recaller, settings, codegraph, sql: new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") }) },
+    api: { models, settings, projects, denoise, assets, l0, l1: l1Store, l2 },
+    gateway: { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller },
+    internal: { projects, assets, l1: l1Store, l0, l2, recaller, settings, sql: new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") }) },
   };
   return { app: createApp(deps), raw, models, settings, assets, denoise, sessions, l0, l1Store, recaller, projects };
 }
@@ -118,9 +115,8 @@ describe("gateway e2e", () => {
     expect(msgs[0]!.content).toContain("You are helpful.");
     expect(msgs[0]!.content).toContain("<project>");
     expect(msgs[0]!.content).toContain("path: d:/work/p");
-    // CodeGraph 使用判据节（playbook）随快照注入
-    expect(msgs[0]!.content).toContain("<codegraph>");
-    expect(msgs[0]!.content).toContain("codegraph_explore");
+    // CodeGraph 已移除：快照不再含 <codegraph> 引导节
+    expect(msgs[0]!.content).not.toContain("<codegraph>");
   });
 
   it("同会话第二轮复用快照（system 注入字节一致）", async () => {
@@ -148,7 +144,7 @@ describe("gateway e2e", () => {
     expect((injected2.match(/<project>/g) ?? []).length).toBe(1);
   });
 
-  it("资产清单注入：生效提示词 + 知识/agents/skills", async () => {
+  it("资产清单注入：生效提示词 + 知识/agents", async () => {
     const { app, models, settings, assets } = makeApp();
     const m = models.create({ category: "llm", name: "mock", url: `http://localhost:${upstreamPort}`, key: "", model: "rm" });
     settings.set("gateway_llm", m.id);
@@ -156,7 +152,6 @@ describe("gateway e2e", () => {
     assets.createPrompt({ name: "p", content: "ALWAYS BE CONCISE", enabled: true });
     const kn = assets.createKnowledge({ title: "架构指南", description: "系统架构", scope: "global", enabled: true });
     const ag = assets.createAgent({ name: "reviewer", description: "代码评审", body: "b", enabled: true });
-    const sk = assets.createSkill({ name: "deploy", description: "发布流程", body: "b", enabled: true });
 
     await (await postChat(app, { model: "x", messages: [{ role: "user", content: "hi" }] }, { "x-project-path": "d:/work/p" })).text();
     const sys = (lastUpstreamBody.messages as { role: string; content: string }[]).find((m) => m.role === "system")!.content;
@@ -167,8 +162,7 @@ describe("gateway e2e", () => {
     expect(sys).toContain(`${kn.id}：架构指南：系统架构`);
     expect(sys).toContain("<agents>");
     expect(sys).toContain(`${ag.id}：reviewer：代码评审`);
-    expect(sys).toContain("<skills>");
-    expect(sys).toContain(`${sk.id}：deploy：发布流程`);
+    expect(sys).not.toContain("<skills>");
   });
 
   it("除噪在转发通道生效", async () => {

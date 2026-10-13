@@ -13,10 +13,8 @@ import Net from '../Common/Net';
 const groupColors = {
     '知识库': 'light-blue',
     'Agents': 'light-blue',
-    '技能': 'light-blue',
     '记忆': 'light-green',
     '对话': 'light-green',
-    '代码图': 'light-blue',
     'SQL': 'pink',
 };
 

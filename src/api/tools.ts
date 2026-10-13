@@ -19,14 +19,10 @@ function groupOf(endpoint: string): string {
       return "知识库";
     case "agents":
       return "Agents";
-    case "skills":
-      return "技能";
     case "memory":
       return "记忆";
     case "conversation":
       return "对话";
-    case "codegraph":
-      return "代码图";
     case "sql":
       return "SQL";
     default:

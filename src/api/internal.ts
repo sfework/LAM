@@ -7,7 +7,6 @@ import type { L0Recorder } from "../memory/l0-recorder.js";
 import type { L2Refiner } from "../memory/l2-refiner.js";
 import type { MemoryRecaller } from "../memory/recall.js";
 import type { SettingsService } from "../settings/service.js";
-import type { CodeGraphService } from "../codegraph/service.js";
 import { SqlError, type SqlService } from "../sql/service.js";
 import type { SqlDialect } from "../sql/drivers.js";
 import { createLogger } from "../infra/logger.js";
@@ -28,7 +27,6 @@ export interface InternalDeps {
   l2: L2Refiner;
   recaller: MemoryRecaller;
   settings: SettingsService;
-  codegraph: CodeGraphService;
   sql: SqlService;
 }
 
@@ -59,16 +57,6 @@ export function createInternalRouter(deps: InternalDeps): Hono {
     const a = deps.assets.getAgent(id);
     if (!a) return notFound(c, "agent", id);
     return ok(c, { id: a.id, name: a.name, description: a.description, body: a.body });
-  });
-
-  // ── skills ──
-  app.get("/skills/list", (c) => ok(c, deps.assets.listSkills().filter((s) => s.enabled).map((s) => ({ id: s.id, name: s.name, description: s.description }))));
-  app.get("/skills/read", (c) => {
-    const id = c.req.query("id");
-    if (!id) return bad(c, "id 必填");
-    const s = deps.assets.getSkill(id);
-    if (!s) return notFound(c, "skill", id);
-    return ok(c, { id: s.id, name: s.name, description: s.description, body: s.body });
   });
 
   // ── memory ──
@@ -109,50 +97,6 @@ export function createInternalRouter(deps: InternalDeps): Hono {
     const limit = intQuery(c, "limit", 10);
     const hits = deps.l0.search(projectId, query, limit);
     return ok(c, hits.map((h) => ({ id: h.row.id, role: h.row.role, content: h.row.content, createdAt: h.row.createdAt, score: Number(h.score.toFixed(4)) })));
-  });
-
-  // ── codegraph（DESIGN §2.8，8 查询工具；未 ready 返回进度提示）──
-  app.get("/codegraph/search", (c) => {
-    const projectId = resolveProjectId(deps, c);
-    if (!projectId) return bad(c, "无法解析 project_path");
-    return cg(c, deps.codegraph.query.search(projectId, c.req.query("query") ?? "", intQuery(c, "limit", 30)));
-  });
-  app.get("/codegraph/explore", (c) => {
-    const projectId = resolveProjectId(deps, c);
-    if (!projectId) return bad(c, "无法解析 project_path");
-    return cg(c, deps.codegraph.query.explore(projectId, cgRef(c)));
-  });
-  app.get("/codegraph/callers", (c) => {
-    const projectId = resolveProjectId(deps, c);
-    if (!projectId) return bad(c, "无法解析 project_path");
-    return cg(c, deps.codegraph.query.callers(projectId, cgRef(c), intQuery(c, "limit", 30)));
-  });
-  app.get("/codegraph/callees", (c) => {
-    const projectId = resolveProjectId(deps, c);
-    if (!projectId) return bad(c, "无法解析 project_path");
-    return cg(c, deps.codegraph.query.callees(projectId, cgRef(c), intQuery(c, "limit", 30)));
-  });
-  app.get("/codegraph/impact", (c) => {
-    const projectId = resolveProjectId(deps, c);
-    if (!projectId) return bad(c, "无法解析 project_path");
-    return cg(c, deps.codegraph.query.impact(projectId, cgRef(c), intQuery(c, "depth", 2)));
-  });
-  app.get("/codegraph/node", (c) => {
-    const projectId = resolveProjectId(deps, c);
-    if (!projectId) return bad(c, "无法解析 project_path");
-    return cg(c, deps.codegraph.query.node(projectId, cgRef(c)));
-  });
-  app.get("/codegraph/status", (c) => {
-    const projectId = resolveProjectId(deps, c);
-    if (!projectId) return bad(c, "无法解析 project_path");
-    return cg(c, deps.codegraph.query.status(projectId));
-  });
-  app.get("/codegraph/files", (c) => {
-    const projectId = resolveProjectId(deps, c);
-    if (!projectId) return bad(c, "无法解析 project_path");
-    const pathQ = c.req.query("path");
-    const withSymbols = c.req.query("with_symbols") === "true" || c.req.query("with_symbols") === "1";
-    return cg(c, deps.codegraph.query.files(projectId, { path: pathQ ?? undefined, withSymbols }));
   });
 
   // ── SQL 只读查询（外部业务库；连接串由调用方直传，不在本库登记）──
@@ -205,18 +149,6 @@ async function sqlResult(c: Context, run: () => Promise<unknown>) {
     log.error({ err: String(err) }, "SQL 端点异常");
     return ok(c, { error: `查询失败：${String(err)}` });
   }
-}
-
-/** codegraph 结果 → 统一响应体（含 status/进度提示/data）。 */
-function cg(c: Context, result: { status: string; progress?: unknown; message?: string; data?: unknown }) {
-  return ok(c, result);
-}
-
-/** 从 query 取符号引用（id 优先，其次 name）。 */
-function cgRef(c: Context): { id?: string; name?: string } {
-  const id = c.req.query("id");
-  const name = c.req.query("name");
-  return { id: id || undefined, name: name || undefined };
 }
 
 /** project_path（query）→ projectId（规范化后查库）。 */

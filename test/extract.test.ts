@@ -11,7 +11,6 @@ import { L1Store } from "../src/memory/l1-store.js";
 import { L1Extractor } from "../src/memory/l1-extractor.js";
 import { L2Refiner } from "../src/memory/l2-refiner.js";
 import { ExtractionScheduler } from "../src/memory/scheduler.js";
-import { SkillExtractor } from "../src/memory/skill-extractor.js";
 import { AssetsRepo } from "../src/assets/repo.js";
 import { tokenizeForFts, buildFtsQuery } from "../src/memory/tokenize.js";
 import { parseLlmJson, parseLlmJsonArray } from "../src/utils/json.js";
@@ -380,79 +379,6 @@ describe("L1Extractor", () => {
     // 旧 metadata 键保留 + 时间戳并集去重排序
     expect(meta.activity_start_time).toBe("2026-09-01T09:00:00+08:00");
     expect(meta.timestamps).toEqual(["2026-09-01T09:00:00+08:00", "2026-09-20T18:00:00+08:00"]);
-  });
-});
-
-// ── SkillExtractor ──
-
-describe("SkillExtractor", () => {
-  it("总闸关闭时不抽取", async () => {
-    const ctx = fresh();
-    // 默认 skill_extract_enabled=false
-    const l0Ids = seedL0(ctx, [["发布流程是什么", "先跑测试再打包"]]);
-    const ex = new SkillExtractor(ctx.raw, ctx.assets, ctx.settings, async () =>
-      JSON.stringify([{ name: "发布", description: "d", body: "步骤", confidence: 90, action: "store", target_id: null }]),
-    );
-    const res = await ex.extract(ctx.projectId, l0Ids, FAKE_LLM);
-    expect(res.extracted).toBe(0);
-    expect(ctx.assets.listSkills()).toHaveLength(0);
-  });
-
-  it("开启后 store 落待审技能（enabled=false / source=auto / 绑定项目）", async () => {
-    const ctx = fresh();
-    ctx.settings.set("skill_extract_enabled", "true");
-    const l0Ids = seedL0(ctx, [["发布流程是什么", "先跑测试再打包"]]);
-    const ex = new SkillExtractor(ctx.raw, ctx.assets, ctx.settings, async () =>
-      JSON.stringify([{ name: "发布检查清单", description: "发布前用", body: "## 步骤\n1. 测试\n2. 打包", confidence: 90, action: "store", target_id: null }]),
-    );
-    const res = await ex.extract(ctx.projectId, l0Ids, FAKE_LLM);
-    expect(res.stored).toBe(1);
-    const sk = ctx.assets.listSkills()[0]!;
-    expect(sk.name).toBe("发布检查清单");
-    expect(sk.enabled).toBe(false);
-    expect(sk.source).toBe("auto");
-    expect(sk.projectId).toBe(ctx.projectId);
-    expect(sk.version).toBe(1);
-  });
-
-  it("低于置信度阈值丢弃", async () => {
-    const ctx = fresh();
-    ctx.settings.set("skill_extract_enabled", "true");
-    ctx.settings.set("skill_extract_min_confidence", "80");
-    const l0Ids = seedL0(ctx, [["随便聊聊", "嗯"]]);
-    const ex = new SkillExtractor(ctx.raw, ctx.assets, ctx.settings, async () =>
-      JSON.stringify([{ name: "弱技能", description: "d", body: "b", confidence: 50, action: "store", target_id: null }]),
-    );
-    const res = await ex.extract(ctx.projectId, l0Ids, FAKE_LLM);
-    expect(res.skipped).toBe(1);
-    expect(res.stored).toBe(0);
-  });
-
-  it("update 决策走版本化：生成新版本，旧版 superseded", async () => {
-    const ctx = fresh();
-    ctx.settings.set("skill_extract_enabled", "true");
-    const existing = ctx.assets.createSkill({ name: "发布检查清单", description: "旧", body: "旧步骤", enabled: true });
-    const l0Ids = seedL0(ctx, [["发布流程要加一步灰度", "好的"]]);
-    const ex = new SkillExtractor(ctx.raw, ctx.assets, ctx.settings, async () =>
-      JSON.stringify([{ name: "发布检查清单", description: "新", body: "## 步骤\n1. 测试\n2. 灰度\n3. 打包", confidence: 95, action: "update", target_id: existing.id }]),
-    );
-    const res = await ex.extract(ctx.projectId, l0Ids, FAKE_LLM);
-    expect(res.updated).toBe(1);
-    const old = ctx.assets.getSkill(existing.id)!;
-    expect(old.status).toBe("superseded");
-    const active = ctx.assets.listSkills().find((s) => s.name === "发布检查清单")!;
-    expect(active.version).toBe(2);
-    expect(active.body).toContain("灰度");
-  });
-
-  it("LLM 返回坏 JSON → 不崩不落库", async () => {
-    const ctx = fresh();
-    ctx.settings.set("skill_extract_enabled", "true");
-    const l0Ids = seedL0(ctx, [["q", "a"]]);
-    const ex = new SkillExtractor(ctx.raw, ctx.assets, ctx.settings, async () => "not json");
-    const res = await ex.extract(ctx.projectId, l0Ids, FAKE_LLM);
-    expect(res.extracted).toBe(0);
-    expect(ctx.assets.listSkills()).toHaveLength(0);
   });
 });
 

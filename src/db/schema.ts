@@ -42,32 +42,6 @@ export const agents = sqliteTable("agents", {
   updatedAt: integer("updated_at", { mode: "number" }).notNull(),
 });
 
-/**
- * skills：技能资产，带版本链与来源标记（DESIGN §2.5、决策 68）。
- * - version/status/superseded_by：版本化——正文实质变化时旧行置 superseded、插入 version+1 新行，
- *   镜像 mem_l1.superseded_by 的软替换语义（旧版不物理删，保留溯源）。
- * - source：manual（手工维护）| auto（对话自动抽取，默认 enabled=false 待人工审核）。
- * - project_id：null=全局；非空=项目隔离技能（自动抽取绑定来源项目）。
- */
-export const skills = sqliteTable(
-  "skills",
-  {
-    id: text("id").primaryKey(),
-    name: text("name").notNull(),
-    description: text("description").notNull().default(""),
-    body: text("body").notNull().default(""),
-    enabled: integer("enabled", { mode: "boolean" }).notNull().default(false),
-    sortOrder: integer("sort_order", { mode: "number" }).notNull().default(0),
-    version: integer("version", { mode: "number" }).notNull().default(1),
-    status: text("status").$type<"active" | "superseded">().notNull().default("active"),
-    source: text("source").$type<"manual" | "auto">().notNull().default("manual"),
-    supersededBy: text("superseded_by"),
-    projectId: text("project_id"),
-    updatedAt: integer("updated_at", { mode: "number" }).notNull(),
-  },
-  (t) => [index("ix_skills_project").on(t.projectId), index("ix_skills_status").on(t.status)],
-);
-
 /** knowledge：scope global|project（唯一带项目维度的资产），清单注入 + MCP 读正文 */
 export const knowledge = sqliteTable(
   "knowledge",
@@ -227,22 +201,4 @@ export const sessions = sqliteTable(
   (t) => [uniqueIndex("uq_sessions_key").on(t.sessionKey), index("ix_sessions_project").on(t.projectId)],
 );
 
-/**
- * cg_status：每项目的 CodeGraph 索引状态（DESIGN 决策 67：图数据本体已外置到
- * {DATA_DIR}/codegraph/<项目哈希>/codegraph.db——vendored @colbymchenry/codegraph
- * 的独立索引库，由 CODEGRAPH_STORE_ROOT 重定向；gateway.db 只留状态与计数）。
- * - status：pending（未建/待建）/ indexing / ready / failed；
- * - turnsSinceIndex：距上次索引累积的对话轮数（final answer 计 1），达到
- *   codegraph_reindex_every_conversations 即触发 sync；
- * - totalFiles/indexedFiles：最近一次索引的文件进度快照（索引中供前端展示）。
- */
-export const cgStatus = sqliteTable("cg_status", {
-  projectId: text("project_id").primaryKey(),
-  status: text("status").notNull().default("pending"),
-  totalFiles: integer("total_files", { mode: "number" }).notNull().default(0),
-  indexedFiles: integer("indexed_files", { mode: "number" }).notNull().default(0),
-  turnsSinceIndex: integer("turns_since_index", { mode: "number" }).notNull().default(0),
-  lastError: text("last_error").notNull().default(""),
-  lastIndexedAt: integer("last_indexed_at", { mode: "number" }),
-  updatedAt: integer("updated_at", { mode: "number" }).notNull(),
-});
+// （CodeGraph 已移除：原 cg_status 表随迁移 0012 删除。）

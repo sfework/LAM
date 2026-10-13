@@ -9,13 +9,9 @@ import { createSettingsRouter } from "./settings.js";
 import { createProjectsRouter } from "./projects.js";
 import { createDenoiseRulesRouter } from "./denoise-rules.js";
 import { createAssetsRouters } from "./assets.js";
-import { createCodegraphRouter } from "./codegraph.js";
-import type { CodeGraphService } from "../codegraph/service.js";
-import { createDbRouter } from "./db.js";
 import { createLogsRouter } from "./logs.js";
 import { createMemoriesRouter } from "./memories.js";
 import { createToolsRouter } from "./tools.js";
-import type { DatabaseSync } from "node:sqlite";
 import type { L1Store } from "../memory/l1-store.js";
 import type { L2Refiner } from "../memory/l2-refiner.js";
 import type { L0Recorder } from "../memory/l0-recorder.js";
@@ -27,11 +23,9 @@ export interface ApiDeps {
   projects: ProjectRepo;
   denoise: DenoiseRepo;
   assets: AssetsRepo;
-  codegraph: CodeGraphService;
   l0: L0Recorder;
   l1: L1Store;
   l2: L2Refiner;
-  raw: DatabaseSync;
 }
 
 /**
@@ -42,19 +36,16 @@ export interface ApiDeps {
 export function createApiRouter(deps: ApiDeps): Hono {
   const api = new Hono();
 
-  api.route("/models", createModelsRouter(deps.models, deps.settings));
+  api.route("/models", createModelsRouter(deps.models, deps.settings, deps.l1));
   api.route("/settings", createSettingsRouter(deps.settings));
-  api.route("/projects", createProjectsRouter(deps.projects, deps.codegraph));
+  api.route("/projects", createProjectsRouter(deps.projects));
   api.route("/denoise-rules", createDenoiseRulesRouter(deps.denoise));
 
   const assets = createAssetsRouters(deps.assets);
   api.route("/prompts", assets.prompts);
   api.route("/agents", assets.agents);
-  api.route("/skills", assets.skills);
   api.route("/knowledge", assets.knowledge);
-  api.route("/codegraph", createCodegraphRouter(deps.codegraph, deps.projects));
   api.route("/memories", createMemoriesRouter({ l0: deps.l0, l1: deps.l1, l2: deps.l2, settings: deps.settings, projects: deps.projects }));
-  api.route("/db", createDbRouter(deps.raw));
   api.route("/logs", createLogsRouter());
   api.route("/tools", createToolsRouter());
 

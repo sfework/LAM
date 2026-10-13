@@ -12,7 +12,7 @@ REM What it does:
 REM   - Re-launches itself elevated (UAC prompt) if not admin
 REM   - Downloads NSSM v2.24 from nssm.cc into tools\ if missing
 REM   - Service command: node.exe --import tsx --liftoff-only src/server.ts
-REM     (--liftoff-only is required by the CodeGraph engine, DESIGN 67)
+REM     (--liftoff-only kept for tsx stability; former CodeGraph requirement, DESIGN 67, is gone)
 REM   - AppDirectory = repo root (so Logs\ and data\ land here)
 REM   - Idempotent: existing service is removed and re-created
 REM =====================================================================
@@ -93,7 +93,7 @@ if not exist "%ROOT%\Logs\service" mkdir "%ROOT%\Logs\service"
 
 "%NSSM%" set %SERVICE_NAME% AppDirectory "%ROOT%"
 "%NSSM%" set %SERVICE_NAME% DisplayName "Local Agent Memory Gateway"
-"%NSSM%" set %SERVICE_NAME% Description "Local Agent Memory Gateway: transparent OpenAI proxy + memory/knowledge/codegraph backend on :8790"
+"%NSSM%" set %SERVICE_NAME% Description "Local Agent Memory Gateway: transparent OpenAI proxy + memory/knowledge backend on :8790"
 "%NSSM%" set %SERVICE_NAME% Start AUTO
 REM restart 5s after unexpected exit
 "%NSSM%" set %SERVICE_NAME% AppExit Default Restart

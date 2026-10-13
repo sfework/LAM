@@ -5,15 +5,15 @@ import { TablePage, SearchBox, DataTable, UIFormModal, ToastUI, DeleteConfirm } 
 import Net from './Net';
 
 /**
- * 资产 CRUD 通用页（agents / skills / knowledge 同构，DESIGN §2.4 / §2.5、决策 45/47）。
+ * 资产 CRUD 通用页（agents / knowledge 同构，DESIGN §2.4 / §2.5、决策 45/47）。
  * 参照提示词页：列表「不显示正文、显示描述」，标题列（原名称列改名「标题」），按 sortOrder 升序，
  * 启用仅在列表切换（走 update{enabled}）、编辑弹窗隐藏启用；搜索 = 关键字（标题+描述模糊）+ 启用状态。
  *
  * 启用/停用仅在列表切换（弹窗不出现启用参数）；标题、描述必填，正文（如有）必填。
  *
  * 配置驱动差异：
- *   resource      Net.api 下的资源名（'agents' | 'skills' | 'knowledge'）
- *   titleKey      标题字段名（agents/skills='name'，knowledge='title'）
+ *   resource      Net.api 下的资源名（'agents' | 'knowledge'）
+ *   titleKey      标题字段名（agents='name'，knowledge='title'）
  *   renderForm    (data, options)=>JSX  描述与排序之间的专属字段
  *   buildBody     (values)=>body        提交体里除标题/描述/排序外的专属字段
  *   extraColumns  描述列之后、排序列之前的额外列（如 knowledge 的 scope）

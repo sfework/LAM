@@ -5,6 +5,7 @@
  */
 
 import { localDateTimeStr } from "../infra/localtime.js";
+import { parseLlmJson } from "../utils/json.js";
 
 export interface ExtractMessage {
   id: string;
@@ -257,74 +258,64 @@ export function formatPersonaPrompt(params: {
   return `【增量更新】当前画像：\n\n${params.existingProfile ?? "（空）"}\n\n新增/变化的记忆：\n\n${memText}\n\n请基于当前画像做最小必要的更新。`;
 }
 
-// ── 技能自动抽取（DESIGN 决策 68）──
+// ── 过期记忆评审（DESIGN 决策 76）──
 
-/** 待审技能候选（LLM 抽取输出，落库前置 enabled=false）。 */
-export interface SkillCandidate {
-  name: string;
-  description: string;
-  body: string;
-  confidence: number;
-  /** 与已有技能冲突判定：store 新增 / update 迭代（生成新版本）/ skip 丢弃。 */
-  action: "store" | "update" | "skip";
-  /** update 时指向被迭代的已有技能 id。 */
-  target_id?: string | null;
+/** 评审决策：delete 完全过时 / rewrite 部分过时（输出修剪正文）/ keep 仍有效。 */
+export interface ExpiryDecision {
+  id: string;
+  action: "delete" | "rewrite" | "keep";
+  /** rewrite 时给出的修剪后完整正文。 */
+  new_content?: string;
 }
 
-export const SKILL_EXTRACT_SYSTEM_PROMPT = `你是"可复用经验萃取专家"。分析对话，抽取**可跨任务复用**的操作流程/排查方法/工作规范（Skill），并与【已有技能】去重。
+export const MEMORY_EXPIRY_SYSTEM_PROMPT = `你是"记忆时效性评审专家"。一批超过保留期的项目记忆需要你逐条评审，决定删除、修剪还是保留。
 
-**输出语言**：name/description/body 用用户消息主导语言；JSON 字段名、枚举值保持英文。
+**输出语言**：new_content 与原记忆条目同语言；JSON 字段名、枚举值保持英文。
 
-## 什么算 Skill（必须满足）
-1. **可复用**：下次遇到同类任务能直接照做，而非一次性操作。
-2. **有步骤**：包含明确的执行流程 / 触发边界 / 校验要点，不只是结论。
-3. **成体系**：如"排查 X 类问题的标准流程""发布前检查清单""代码评审规范"。
-
-## 什么不算 Skill（严禁抽取）
-- 单纯的事实/偏好/决策（那些属于记忆，不是技能）；
-- 一次性指令、临时操作、寒暄；
-- 没有可执行步骤的模糊经验描述；
-- AI 自身的对话行为。
-
-## 与已有技能的关系（action 判定）
-- **store**：全新技能，已有技能里没有对应项。
-- **update**：与某已有技能是同一流程的改进/补全/纠错 → 输出更完整的 body，target_id 指向该已有技能 id（系统会生成新版本）。
-- **skip**：已有技能已覆盖、无实质增量 → 丢弃。
+## 判定标准
+- **delete**：内容已完全失去参考价值——描述的事件/状态/决策早已结束或被推翻，一次性操作记录，
+  或引用的代码工件（文件/函数/配置）按常识已不可能仍存在（如"临时调试方案"）。
+- **rewrite**：条目中**部分**过时但仍含有效信息——输出修剪后的完整正文，只保留仍然有效的部分，
+  删掉过时片段；不得新增原条目没有的信息，不得改变原意，尽量沿用原文措辞。
+- **keep**：虽然超龄但仍是长期有效的约定/事实/方法（如"项目使用 pnpm 管理依赖"）；
+  或你无法确定其是否过时（**存疑一律 keep，宁保守勿误删**）。
 
 ## 输出格式（严格 JSON 数组，无其他内容、无 markdown 修饰符）
 [
-  {
-    "name": "简短技能名（动宾，≤20字）",
-    "description": "一句话：什么时候用这个技能（≤80字，将注入清单供模型判断是否读取正文）",
-    "body": "Markdown 正文：## 适用场景 / ## 执行步骤（有序列表） / ## 校验与禁忌",
-    "confidence": 0-100 整数,
-    "action": "store|update|skip",
-    "target_id": "update 时为已有技能 id，否则 null"
-  }
+  { "id": "原样回传条目 id", "action": "delete|rewrite|keep", "new_content": "仅 rewrite 时给出修剪后正文" }
 ]
-宁缺毋滥：没有值得沉淀的可复用流程时输出空数组 []。confidence 低于阈值的不要输出。`;
 
-export function getSkillExtractSystemPrompt(): string {
-  return SKILL_EXTRACT_SYSTEM_PROMPT;
+必须为输入的每一条给出决策，id 原样回传，不得遗漏或臆造。`;
+
+export function getMemoryExpirySystemPrompt(): string {
+  return MEMORY_EXPIRY_SYSTEM_PROMPT;
 }
 
-export interface ExistingSkillBrief {
-  id: string;
-  name: string;
-  description: string;
+export function formatExpiryPrompt(
+  items: { id: string; kind: string; content: string; ageDays: number }[],
+  today: string,
+): string {
+  const pool = items
+    .map((it) => `--- id=${it.id} | kind=${it.kind} | 已存在 ${it.ageDays} 天 ---\n${it.content}`)
+    .join("\n\n");
+  return `【评审日期】${today}
+
+【超龄记忆条目】（共 ${items.length} 条，逐条评审）：
+
+${pool}
+
+请输出决策 JSON 数组。`;
 }
 
-export function formatSkillExtractPrompt(params: {
-  newMessages: ExtractMessage[];
-  existingSkills: ExistingSkillBrief[];
-}): string {
-  const fmt = (m: ExtractMessage) => `[${m.id}] [${m.role}]: ${m.content}`;
-  const pool = params.existingSkills.length
-    ? params.existingSkills.map((s) => `- id=${s.id} | ${s.name}：${s.description}`).join("\n")
-    : "（无已有技能，新技能一律 action=store）";
-  return `【已有技能清单】（用于去重判定）：\n${pool}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-【本轮对话】（从中萃取可复用技能）：\n${params.newMessages.map(fmt).join("\n\n")}`;
+/** 解析评审输出（容忍对象包裹 {decisions:[...]} 的形态）；坏输出返回 null。 */
+export function parseExpiryDecisions(raw: string): ExpiryDecision[] | null {
+  const v = parseLlmJson<ExpiryDecision[] | { decisions?: ExpiryDecision[] }>(raw);
+  if (!v) return null;
+  const arr = Array.isArray(v) ? v : v.decisions;
+  if (!Array.isArray(arr)) return null;
+  const out = arr.filter(
+    (d): d is ExpiryDecision =>
+      !!d && typeof d.id === "string" && (d.action === "delete" || d.action === "rewrite" || d.action === "keep"),
+  );
+  return out.length ? out : null;
 }

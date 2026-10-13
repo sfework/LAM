@@ -12,4 +12,4 @@ export { L2Refiner } from "./l2-refiner.js";
 export { ExtractionScheduler } from "./scheduler.js";
 export { MemoryRecaller } from "./recall.js";
 export { EmbeddingBackfiller } from "./embed-backfill.js";
-export { SkillExtractor } from "./skill-extractor.js";
+export { MemoryExpirer } from "./expiry.js";

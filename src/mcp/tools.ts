@@ -2,8 +2,7 @@
  * MCP 薄壳的工具定义（DESIGN §3、决策 9：工具自描述）。
  * 每个工具映射到主服务 /internal/* 的一个只读端点；project_path 作为参数由模型回传
  * （注入块里已带项目路径，见 DESIGN §2.6）。
- * codegraph 系列的描述采用引导式文案（仿参考项目）：explore 立为首选、其余工具向它收敛，
- * 并给出行动触发语（重构前用 impact 等），配合快照 <codegraph> 节提升选用率。
+ * （CodeGraph 8 工具已随功能整体移除。）
  */
 
 export interface ToolDef {
@@ -30,8 +29,9 @@ const SQL_DIALECTS: { key: string; label: string; conn: string }[] = [
 ];
 
 /** 生成 12 个 SQL 工具定义（每方言三个），端点按方言走路径段。
- * 注意：knowledge/agent/skill 的 list 工具已移除（决策 70）——清单已注入系统提示，模型按 id 直接 read 即可；
- * internal 的 knowledge/agents/skills list 端点保留（供管理台与 simulate-usage 脚本使用）。 */
+ * 注意：knowledge/agent 的 list 工具已移除（决策 70）——清单已注入系统提示，模型按 id 直接 read 即可；
+ * internal 的 knowledge/agents list 端点保留（供管理台与 simulate-usage 脚本使用）。
+ * （技能 skill 资产与 skill_read 工具已随功能整体移除。） */
 function sqlToolDefs(): ToolDef[] {
   const defs: ToolDef[] = [];
   for (const d of SQL_DIALECTS) {
@@ -97,12 +97,6 @@ export const TOOL_DEFS: ToolDef[] = [
     endpoint: "/internal/agents/read",
   },
   {
-    name: "skill_read",
-    description: "按 id 读取技能的完整正文。",
-    inputSchema: { type: "object", properties: { id: { type: "string", description: "技能 id（来自系统提示 <skills> 段的 id）" } }, required: ["id"], additionalProperties: false },
-    endpoint: "/internal/skills/read",
-  },
-  {
     name: "memory_search",
     description: "检索项目结构化记忆（L1，原子事实/偏好/决策/方法）。返回 id 与内容摘要，配合 memory_read 取原文溯源。与 conversation_search 每轮合计最多调用 3 次。",
     inputSchema: {
@@ -145,133 +139,6 @@ export const TOOL_DEFS: ToolDef[] = [
     },
     endpoint: "/internal/conversation/search",
     searchFamily: true,
-  },
-
-  // ── CodeGraph（DESIGN §2.8，8 工具；均只读、不计入检索限流）──
-  {
-    name: "codegraph_search",
-    description:
-      "按名称快速搜索项目代码符号，只返回位置（id/名称/类型/文件/行号，不含源码）。FTS 前缀 + camelCase 段词 + 子串兜底，大小写不敏感；支持 kind:/lang:/path:/name: 字段过滤（如 \"kind:class path:controller auth\"）。想直接了解符号的上下文/调用关系，请改用 codegraph_explore。索引构建中会返回进度提示，可稍后重试。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        project_path: PROJECT_PATH_PROP,
-        query: { type: "string", description: "符号名关键词，可带字段过滤前缀 kind:/lang:/path:/name:。" },
-        limit: { type: "number", description: "返回条数上限（可选，默认 30）。" },
-      },
-      required: ["project_path", "query"],
-      additionalProperties: false,
-    },
-    endpoint: "/internal/codegraph/search",
-  },
-  {
-    name: "codegraph_node",
-    description:
-      "【explore 之后的次选】查看单个符号的详情（文件、行范围）及其直接调用方/被调方。用 id（来自 codegraph_search）精确定位，或用 name（需唯一）。需要多个相关符号或完整流程时请用 codegraph_explore。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        project_path: PROJECT_PATH_PROP,
-        id: { type: "string", description: "符号 id（优先）。" },
-        name: { type: "string", description: "符号名（无 id 时用，需唯一，多匹配会返回候选）。" },
-      },
-      required: ["project_path"],
-      additionalProperties: false,
-    },
-    endpoint: "/internal/codegraph/node",
-  },
-  {
-    name: "codegraph_callers",
-    description: "列出调用指定符号的其他符号（直接调用方）。想看完整调用流程，请改用 codegraph_explore。用 id 或唯一 name 定位符号。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        project_path: PROJECT_PATH_PROP,
-        id: { type: "string", description: "符号 id（优先）。" },
-        name: { type: "string", description: "符号名（需唯一）。" },
-        limit: { type: "number", description: "返回条数上限（可选）。" },
-      },
-      required: ["project_path"],
-      additionalProperties: false,
-    },
-    endpoint: "/internal/codegraph/callers",
-  },
-  {
-    name: "codegraph_callees",
-    description: "列出指定符号调用的其他符号（被调方）。想看完整调用流程，请改用 codegraph_explore。用 id 或唯一 name 定位符号。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        project_path: PROJECT_PATH_PROP,
-        id: { type: "string", description: "符号 id（优先）。" },
-        name: { type: "string", description: "符号名（需唯一）。" },
-        limit: { type: "number", description: "返回条数上限（可选）。" },
-      },
-      required: ["project_path"],
-      additionalProperties: false,
-    },
-    endpoint: "/internal/codegraph/callees",
-  },
-  {
-    name: "codegraph_impact",
-    description:
-      "【重构前先用它】分析修改某符号的影响面：沿依赖边（调用/引用/继承/实现/实例化/类型引用）反向 BFS 若干层，列出受影响的符号集合。改签名/删函数前评估波及范围用——即使已在改代码，这类结构问题仍该用它。用 id 或唯一 name 定位符号，depth 控制层数（默认 2，上限 5）。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        project_path: PROJECT_PATH_PROP,
-        id: { type: "string", description: "符号 id（优先）。" },
-        name: { type: "string", description: "符号名（需唯一）。" },
-        depth: { type: "number", description: "反向遍历层数（默认 2，上限 5）。" },
-      },
-      required: ["project_path"],
-      additionalProperties: false,
-    },
-    endpoint: "/internal/codegraph/impact",
-  },
-  {
-    name: "codegraph_explore",
-    description:
-      "【首选工具】了解代码区域一次调用给全：给定符号（id/name）返回其详情、调用方、被调方与同文件兄弟符号；给定 file 路径则返回该文件内的全部符号概览。优先于多轮 search+node+callers 拼装。注意：返回的是符号上下文而非源码原文，需要某段代码此刻的精确内容（按行编辑/未提交改动）仍以 read_file 为准。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        project_path: PROJECT_PATH_PROP,
-        id: { type: "string", description: "符号 id。" },
-        name: { type: "string", description: "符号名（需唯一）。" },
-        file: { type: "string", description: "或按文件相对路径探索（返回文件内符号）。" },
-      },
-      required: ["project_path"],
-      additionalProperties: false,
-    },
-    endpoint: "/internal/codegraph/explore",
-  },
-  {
-    name: "codegraph_files",
-    description:
-      "列出项目已索引的文件（可按路径子串过滤），或对单文件返回其符号清单（with_symbols=true）。了解项目结构比 Glob 更快、且带符号数。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        project_path: PROJECT_PATH_PROP,
-        path: { type: "string", description: "可选，按路径子串过滤。" },
-        with_symbols: { type: "boolean", description: "为 true 时附带每个文件的符号清单。" },
-      },
-      required: ["project_path"],
-      additionalProperties: false,
-    },
-    endpoint: "/internal/codegraph/files",
-  },
-  {
-    name: "codegraph_status",
-    description: "索引健康检查（pending/indexing/ready/failed 与文件/符号进度）。除非排查 codegraph 为何不可用，一般不需要；其他 codegraph 工具返回进度提示时用它判断何时可查。",
-    inputSchema: {
-      type: "object",
-      properties: { project_path: PROJECT_PATH_PROP },
-      required: ["project_path"],
-      additionalProperties: false,
-    },
-    endpoint: "/internal/codegraph/status",
   },
 
   // ── SQL 只读查询（四方言 × query / list_tables / describe_table；不依赖 project_path，不计入检索限流）──

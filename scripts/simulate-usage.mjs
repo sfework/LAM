@@ -5,12 +5,12 @@
  * 调度器真实节律）以一个有真实代码资源的项目为测试对象，模拟真实 Agent 客户端完整使用旅程。
  *
  * 与首版（一次性 usage-sim 项目）的差异（决策 59）：
- *  - 测试项目 = --project 指定（默认本仓库自身，有完整代码资源可供 CodeGraph 断言）；
+ *  - 测试项目 = --project 指定（默认本仓库自身）；
  *  - **跑完不删测试数据**（管理台可回看）；仅回切原生效提示词（互斥副作用）；
- *  - 新增资产播种（提示词/agents/技能/知识库）+ 注入端到端验证；
+ *  - 新增资产播种（提示词/agents/知识库）+ 注入端到端验证；
  *  - 新增自动召回质量（命中率/多主题/精确率/溯源/项目隔离/端到端）；
- *  - 新增 L2 画像质量（结构/关键事实/长度上限/注入）；
- *  - 新增 CodeGraph 质量（状态/检索/调用边/影响面/精确率/关系图完整性）。
+ *  - 新增 L2 画像质量（结构/关键事实/长度上限/注入）。
+ *  - （CodeGraph 质量阶段已随功能移除。）
  *
  * 用法：
  *   node scripts/simulate-usage.mjs [--base http://localhost:8790] [--wait 420] [--project <路径>]
@@ -18,7 +18,7 @@
  *     --project  被测项目绝对路径（需已在网关登记且服务可访问；默认本仓库根目录）
  *
  * 归因：所有测试数据带一次性后缀 SUF（标记词「沧溟<6位>」、提示词签名、资产描述代号、
- * 知识/agents/技能清单代号），既能精确断言"是本轮仿真产生的"，又不会与既有数据混淆。
+ * 知识/agents 清单代号），既能精确断言"是本轮仿真产生的"，又不会与既有数据混淆。
  */
 
 import { fileURLToPath } from "node:url";
@@ -35,7 +35,6 @@ const MARK = `沧溟${SUF}`; // 记忆代号（提取/召回归因）
 const SIG = `〔SIM-${SUF}〕`; // 提示词签名（<prompts> 注入验证）
 const KNO = `赤霄${SUF}`; // 知识清单代号
 const AGT = `蓝鲸${SUF}`; // agents 清单代号
-const SKL = `银杏${SUF}`; // 技能清单代号
 
 const results = [];
 
@@ -139,7 +138,7 @@ const TURNS = [
   `存储层定了：Node 24 内置 node:sqlite，WAL 模式；向量检索用 sqlite-vec 的 vec0 虚拟表，维度固定 1024，明确不用 Postgres 也不用 better-sqlite3。`,
   `记住我的偏好：包管理一律 pnpm，单测用 vitest，日志与入库时间固定本地时区不用 UTC，提交信息写中文。`,
   `记一个踩坑教训：Semi UI 的 TabPane 键属性是 itemKey 不是 tabKey，写错不报错但页签内容渲染为空。`,
-  `删除策略决定：「${MARK}」除项目保留软删外，模型/提示词/agents/技能/知识库/L0/L1 的单条删除全部物理删除。`,
+  `删除策略决定：「${MARK}」除项目保留软删外，模型/提示词/agents/知识库/L0/L1 的单条删除全部物理删除。`,
   `API 约定：/api/* 一律 POST + JSON body，列表返回 PaginationModel 分页包络，默认 pageSize 30。`,
 ];
 
@@ -148,7 +147,7 @@ const TURNS = [
 console.log(`\n══ 真实环境使用仿真（测试项目 = ${PROJECT}）══`);
 console.log(`目标服务 : ${BASE}`);
 console.log(`主线会话 : ${SESSION}`);
-console.log(`归因代号 : 记忆=${MARK} 提示词签名=${SIG} 资产=${KNO}/${AGT}/${SKL}`);
+console.log(`归因代号 : 记忆=${MARK} 提示词签名=${SIG} 资产=${KNO}/${AGT}`);
 console.log(`管线等待 : ≤${WAIT_SEC}s（真实 LLM + 调度器真实节律）`);
 console.log(`数据策略 : 跑完保留全部测试数据（仅回切原生效提示词）\n`);
 
@@ -168,13 +167,12 @@ await check("预检：三模型绑定 + 提取/召回开启", async () => {
   return `memory_llm=${get("memory_llm")} embedding=${get("embedding_model")}`;
 });
 let projectId = null;
-await check("被测项目登记 + CodeGraph 基线", async () => {
+await check("被测项目登记", async () => {
   projectId = (await api("projects/get-by-path", { path: PROJECT })).id;
-  const st = (await internal(`codegraph/status?project_path=${encodeURIComponent(PROJECT)}`)).data;
-  return `project=${projectId} cg=${st.status} files=${st.files} symbols=${st.symbols}`;
+  return `project=${projectId}`;
 });
 
-console.log("\n▶ 阶段 1：资产播种（提示词 / agents / 技能 / 知识库）");
+console.log("\n▶ 阶段 1：资产播种（提示词 / agents / 知识库）");
 let seededPromptId = null;
 let originalActivePromptId = null;
 await check("记录原生效提示词（跑完回切，抵消互斥副作用）", async () => {
@@ -192,48 +190,40 @@ await check("创建并启用仿真提示词（含强制签名指令）", async (
   return `id=${p.id}（启用会自动停用原提示词）`;
 });
 let seededAssetIds = {};
-await check("创建 agents / 技能 / 知识库（描述埋验证代号）", async () => {
+await check("创建 agents / 知识库（描述埋验证代号）", async () => {
   const a = await api("agents/create", {
     name: `sim-reviewer-${SUF}`,
     description: `代码评审守则「${AGT}」：按 id 读取正文，评审 TS 前先跑 pnpm typecheck`,
     body: `# sim-reviewer\n评审顺序：typecheck → vitest → 代码走查。重点看 ESM 的 .js 导入后缀、drizzle 迁移与 journal 一致性。`,
     enabled: true,
   });
-  const s = await api("skills/create", {
-    name: `sim-release-${SUF}`,
-    description: `发布流程「${SKL}」：build:web → pnpm build → 重启服务 → health 探活`,
-    body: `# sim-release\n1. pnpm build:web\n2. pnpm build\n3. 停旧进程后 pnpm start\n4. 探 /health 确认 fts5/vec=true`,
-    enabled: true,
-  });
   const k1 = await api("knowledge/create", {
     title: `LAM 架构速查-${SUF}`,
-    description: `知识代号「${KNO}」：快照六节注入顺序 prompts/knowledge/agents/skills/memory/project`,
-    body: `# LAM 架构\n透明 OpenAI 网关 + L0/L1/L2 三层记忆 + CodeGraph。快照每会话生成一次并缓存复用，保上游 KV cache 前缀稳定。`,
+    description: `知识代号「${KNO}」：快照五节注入顺序 prompts/knowledge/agents/memory/project`,
+    body: `# LAM 架构\n透明 OpenAI 网关 + L0/L1/L2 三层记忆。快照每会话生成一次并缓存复用，保上游 KV cache 前缀稳定。`,
     scope: "global",
     enabled: true,
   });
   const k2 = await api("knowledge/create", {
     title: `被测项目环境-${SUF}`,
     description: `本项目专属：数据目录 data/gateway.db，日志 data/Logs 小时滚动`,
-    body: `# 环境\nnode:sqlite WAL；sqlite-vec 需 allowExtension 加载；备份走 VACUUM INTO 一致性快照。`,
+    body: `# 环境\nnode:sqlite WAL；sqlite-vec 需 allowExtension 加载；数据备份走停服拷贝 data/ 目录。`,
     scope: "project",
     projectId,
     enabled: true,
   });
-  seededAssetIds = { a: a.id, s: s.id, k1: k1.id, k2: k2.id };
-  return `agt=${a.id} skl=${s.id} kno=${k1.id}/${k2.id}`;
+  seededAssetIds = { a: a.id, k1: k1.id, k2: k2.id };
+  return `agt=${a.id} kno=${k1.id}/${k2.id}`;
 });
 await check("资产读取回路（/internal，MCP 工具同路径）", async () => {
   const kn = await internal(`knowledge/list?project_path=${encodeURIComponent(PROJECT)}`);
   const ag = await internal("agents/list");
-  const sk = await internal("skills/list");
   assert(kn.some((x) => x.description.includes(KNO)), "知识清单缺新全局条目");
   assert(kn.some((x) => x.description.includes("本项目专属")), "project scope 知识未按项目返回");
   assert(ag.some((x) => x.description.includes(AGT)), "agents 清单缺新条目");
-  assert(sk.some((x) => x.description.includes(SKL)), "技能清单缺新条目");
   const read = await internal(`knowledge/read?id=${kn.find((x) => x.description.includes(KNO)).id}`);
   assert(read.body.includes("KV cache"), "read 正文缺失");
-  return `清单 kno=${kn.length} agt=${ag.length} skl=${sk.length}；read 正文 OK`;
+  return `清单 kno=${kn.length} agt=${ag.length}；read 正文 OK`;
 });
 
 console.log("\n▶ 阶段 2：多轮真实对话（客户端全量上传，网关真实转发 qwen）");
@@ -273,20 +263,20 @@ await check("L0 落库 + 时间倒序", async () => {
   return `共 ${r.totalCount} 条，含代号 ${r.list.filter((x) => x.content.includes(MARK)).length} 条，倒序 OK，${t}`;
 });
 
-console.log("\n▶ 阶段 4：资产注入端到端（冷启动 → 快照六节真进上游）");
+console.log("\n▶ 阶段 4：资产注入端到端（冷启动 → 快照五节真进上游）");
 await check("<prompts> 生效：回答带签名（证明 system 注入）", async () => {
   const text = await coldAsk("这个项目的向量维度是多少？一句话回答。");
   assert(text.includes(SIG), `未见签名，回答=${head(text, 60)}`);
   return `签名命中，回答=${head(text, 40)}`;
 });
-await check("<knowledge>/<agents>/<skills> 清单生效：三个代号可读回", async () => {
+await check("<knowledge>/<agents> 清单生效：两个代号可读回", async () => {
   const text = await coldAsk(
-    `系统提示里注入了知识、agents、技能清单（每行是 id：描述）。请只回答三个代号，按行输出：` +
-      `1) 描述里含「赤霄」开头的中文代号是什么；2) 描述里含「蓝鲸」开头的中文代号是什么；3) 描述里含「银杏」开头的中文代号是什么。`,
+    `系统提示里注入了知识、agents 清单（每行是 id：描述）。请只回答两个代号，按行输出：` +
+      `1) 描述里含「赤霄」开头的中文代号是什么；2) 描述里含「蓝鲸」开头的中文代号是什么。`,
   );
-  const hit = [KNO, AGT, SKL].filter((m) => text.includes(m));
-  assert(hit.length === 3, `仅命中 ${hit.length}/3（${hit.join(",")}），回答=${head(text, 80)}`);
-  return "三代号全中";
+  const hit = [KNO, AGT].filter((m) => text.includes(m));
+  assert(hit.length === 2, `仅命中 ${hit.length}/2（${hit.join(",")}），回答=${head(text, 80)}`);
+  return "两代号全中";
 });
 
 console.log("\n▶ 阶段 5：L1 提取 + 自动召回质量（真实 memory_llm，调度器真实节律）");
@@ -379,70 +369,7 @@ await check("画像注入：冷启动答出项目定位与端口", async () => {
   return head(text, 50);
 });
 
-console.log("\n▶ 阶段 7：CodeGraph 质量（真实代码库）");
-await check("索引状态 ready", async () => {
-  const d = (await internal(`codegraph/status?project_path=${encodeURIComponent(PROJECT)}`)).data;
-  assert(d.status === "ready", `status=${d.status} ${d.lastError ?? ""}`);
-  return `files=${d.files} symbols=${d.symbols} lastIndexedAt=${d.lastIndexedAt ? new Date(d.lastIndexedAt).toLocaleString() : "-"}`;
-});
-await check("符号检索：真实类/函数可定位且文件正确", async () => {
-  const probes = [["L1Store", /l1-store/], ["normalizeProjectPath", /normalize/], ["forwardChat", /forwarder/]];
-  const out = [];
-  for (const [name, fileRe] of probes) {
-    const r = (await internal(`codegraph/search?project_path=${encodeURIComponent(PROJECT)}&query=${name}&limit=20`)).data ?? [];
-    const hit = r.find((h) => h.name === name);
-    assert(hit, `「${name}」未检索到（top=${r[0]?.name ?? "空"}）`);
-    assert(fileRe.test(hit.file), `${name} 文件异常：${hit.file}`);
-    out.push(`${name}@${hit.file.split("/").pop()}:${hit.line}`);
-  }
-  return out.join(" ");
-});
-await check("调用边：callers 命中真实调用方", async () => {
-  const r = (await internal(`codegraph/callers?project_path=${encodeURIComponent(PROJECT)}&name=normalizeProjectPath&limit=30`)).data;
-  const callers = r?.callers ?? [];
-  assert(callers.length >= 3, `调用方仅 ${callers.length}（api/gateway/projects 多处调用，应≥3）`);
-  const files = new Set(callers.map((c) => c.file));
-  assert([...files].every((f) => f.startsWith("src/")), `调用方文件异常：${[...files].join(",")}`);
-  return `${callers.length} 个调用方，跨 ${files.size} 文件（${[...files].slice(0, 2).join(", ")}…）`;
-});
-await check("被调方：callees 反向边可用", async () => {
-  const r = (await internal(`codegraph/callees?project_path=${encodeURIComponent(PROJECT)}&name=upsertOnRequest&limit=20`)).data;
-  const n = r?.callees?.length ?? 0;
-  assert(n >= 1, `upsertOnRequest 无被调方（${JSON.stringify(r).slice(0, 80)}）`);
-  return `${n} 个被调方：${r.callees.slice(0, 3).map((c) => c.name).join(", ")}`;
-});
-await check("影响面：impact 反向 BFS 非空", async () => {
-  const r = (await internal(`codegraph/impact?project_path=${encodeURIComponent(PROJECT)}&name=normalizeProjectPath&depth=2`)).data;
-  assert((r?.affectedCount ?? 0) >= 3, `影响面仅 ${r?.affectedCount ?? 0}`);
-  return `depth=2 受影响 ${r.affectedCount} 个符号`;
-});
-await check("精确率：不存在符号返回空而非误报", async () => {
-  const r = (await internal(`codegraph/search?project_path=${encodeURIComponent(PROJECT)}&query=zzzNoSuchSymbol${SUF}&limit=5`)).data ?? [];
-  assert(r.length === 0, `误报：${JSON.stringify(r).slice(0, 80)}`);
-  return "空结果 OK";
-});
-await check("文件清单：/codegraph/files 覆盖 src 与 frontend", async () => {
-  const d = (await internal(`codegraph/files?project_path=${encodeURIComponent(PROJECT)}`)).data ?? {};
-  const paths = (d.files ?? []).map((f) => f.path);
-  assert(paths.length >= 50, `文件仅 ${paths.length}`);
-  const hasSrc = paths.some((p) => p.startsWith("src/"));
-  const hasFrontend = paths.some((p) => p.startsWith("frontend/"));
-  assert(hasSrc && hasFrontend, `覆盖不足 src=${hasSrc} frontend=${hasFrontend}`);
-  return `total=${d.total} 列出 ${paths.length}（src + frontend 均覆盖）`;
-});
-await check("关系图：/api/codegraph/graph 完整性（前端数据源）", async () => {
-  const g = await api("codegraph/graph", { id: projectId, maxNodes: 120 });
-  assert(g.status === "ready", `status=${g.status} ${g.message ?? ""}`);
-  assert(g.nodes.length > 50 && g.nodes.length <= 120, `节点数 ${g.nodes.length} 不在 (50,120]`);
-  const ids = new Set(g.nodes.map((n) => n.id));
-  const dangling = g.edges.filter((e) => !ids.has(e.from) || !ids.has(e.to)).length;
-  assert(dangling === 0, `${dangling} 条悬挂边（应只保留两端都在节点集内）`);
-  assert(g.stats.totalSymbols >= 500, `符号总数异常：${g.stats.totalSymbols}`);
-  const kinds = new Set(g.nodes.map((n) => n.kind));
-  return `nodes=${g.nodes.length} edges=${g.edges.length}（全量 ${g.stats.totalSymbols} 符号/${g.stats.totalEdges} 边，kind ${kinds.size} 种）`;
-});
-
-console.log("\n▶ 阶段 8：管理端可见性 + 状态回切");
+console.log("\n▶ 阶段 7：管理端可见性 + 状态回切");
 await check("管理 API：L0/L1/画像/资产/日志均可查（前端页面数据源）", async () => {
   const l1 = await api("memories/list", { project_id: projectId, page: 1, pageSize: 1 });
   const ag = await api("agents/list", { keyword: AGT, page: 1, pageSize: 10 });
@@ -475,6 +402,6 @@ const fail = results.length - pass;
 console.log(`\n══ 汇总：${pass} 通过 / ${fail} 失败 / 共 ${results.length} 项 ══`);
 for (const r of results) if (!r.ok) console.log(`   FAILED: ${r.name} — ${r.detail}`);
 console.log(`\n数据保留（未删除）：项目 ${PROJECT}，代号后缀 ${SUF}`);
-console.log(`  提示词 ${seededPromptId ?? "-"} ｜ agents ${seededAssetIds.a ?? "-"} ｜ 技能 ${seededAssetIds.s ?? "-"} ｜ 知识库 ${seededAssetIds.k1 ?? "-"} / ${seededAssetIds.k2 ?? "-"}`);
-console.log(`  管理台回看：记忆页选被测项目（L0/L1/L2）、Agents/技能/知识库页、CodeGraph 页`);
+console.log(`  提示词 ${seededPromptId ?? "-"} ｜ agents ${seededAssetIds.a ?? "-"} ｜ 知识库 ${seededAssetIds.k1 ?? "-"} / ${seededAssetIds.k2 ?? "-"}`);
+console.log(`  管理台回看：记忆页选被测项目（L0/L1/L2）、Agents/知识库页`);
 process.exit(fail ? 1 : 0);

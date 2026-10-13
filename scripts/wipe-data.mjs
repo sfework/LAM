@@ -4,13 +4,16 @@
  *
  * 保留：models、settings、__migrations（迁移记录，删了会重跑迁移）。
  * 清空：项目/会话/管线状态/提取队列、L0/L1/L2（含 FTS 与 vec0 索引）、
- *       提示词/agents/技能/知识库/除噪规则、CodeGraph 全部产物。
+ *       提示词/agents/知识库/除噪规则。
+ *       （技能 skills 已随功能移除；存量库遗留的 skills 表存在则一并清空。）
+ *       （CodeGraph 已移除；遗留的 {DATA_DIR}/codegraph/ 外置索引目录一并物理删除。）
  *
  * 前置：**必须先停服**（WAL 下有写入会复活数据）。
  * 用法：node scripts/wipe-data.mjs [--yes]
  */
 import { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,6 +30,7 @@ const WIPE = [
   "cg_calls", "cg_edges", "cg_symbols", "cg_files", "cg_status",
   "mem_l0_fts", "mem_l1_fts", "mem_l1_vec",
 ];
+// cg_* / skills 为已移除功能的遗留表（CodeGraph、技能）：存在则顺手清，不存在自动跳过。
 
 const yes = process.argv.includes("--yes");
 if (!yes) {
@@ -86,3 +90,10 @@ for (const t of KEEP) {
 const size = (db.prepare("SELECT page_count * page_size AS b FROM pragma_page_count(), pragma_page_size()").get()).b;
 console.log(`\n完成。DB 体积 ${(Number(size) / 1024 / 1024).toFixed(2)} MB。`);
 db.close();
+
+// CodeGraph 外置索引目录（{DATA_DIR}/codegraph）：功能已移除，存在则物理删除。
+const cgDir = path.join(path.dirname(DB), "codegraph");
+if (fs.existsSync(cgDir)) {
+  fs.rmSync(cgDir, { recursive: true, force: true });
+  console.log(`已删除 CodeGraph 遗留索引目录：${cgDir}`);
+}

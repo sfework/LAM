@@ -42,7 +42,7 @@ function logRoot(): string {
 
 /**
  * 创建带模块名的 logger。
- * @param module 模块标识，如 "gateway" / "memory" / "codegraph"
+ * @param module 模块标识，如 "gateway" / "memory" / "settings"
  */
 export function createLogger(module: string): Logger {
   const sink = buildSinkStream(logRoot());

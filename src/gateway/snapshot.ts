@@ -5,35 +5,17 @@ import type { SettingsService } from "../settings/service.js";
 /**
  * 注入快照生成器（DESIGN §2.6）。
  *
- * 七节，顺序固定，空节省略：
+ * 五节，顺序固定，空节省略：
  *   <prompts> 生效提示词正文
  *   <knowledge> 知识清单（全局 + 本项目，id + 标题 + 描述）
  *   <agents> Agents 生效清单
- *   <skills> 技能生效清单
  *   <memory> L2 项目画像（阶段 6 接入，本阶段无则省略）
  *   <project> 规范化项目路径（供 MCP 工具回传 project_path）
- *   <codegraph> CodeGraph 使用判据（仿参考项目 playbook，提升工具选用率）
  *
  * 会话首轮生成一次并缓存到 sessions.inject_snapshot，之后每轮复用（字节级一致，
  * 保上游 KV cache 前缀稳定）。文案调整仅对新会话生效，旧会话沿用已缓存快照。
+ * （CodeGraph 使用判据节已随功能整体移除。）
  */
-
-/**
- * CodeGraph 使用判据（对齐参考项目 knowledge-tools-injector 的
- * "何时调 / 不该用 / 意图→起手" 结构，按 LAM 能力变形：
- * 本项目 explore 返回符号上下文而非源码原文，故引导为 codegraph 定位 → read_file 精读）。
- */
-const CODEGRAPH_GUIDE = [
-  "<codegraph>",
-  "代码结构问题优先用 codegraph_* 工具（本项目索引由网关自动构建与同步）：",
-  "- 熟悉项目/找入口/某能力在哪实现 → codegraph_search / codegraph_files",
-  "- 了解某符号上下文、谁调用它、它调用谁 → codegraph_explore（首选，一次给全）/ callers / callees",
-  "- 改签名/删函数前评估波及面 → codegraph_impact（即使已在改代码，结构问题仍该用它）",
-  "- 想不起符号名、不确定是否已有实现 → codegraph_search 先查再写",
-  "只有需要某段代码此刻的精确内容（按行编辑、刚改未提交、读实现细节）才用 read_file/grep；",
-  "典型组合：codegraph 定位结构 → read_file 精读落点，两者不冲突。",
-  "</codegraph>",
-].join("\n");
 
 export interface SnapshotInput {
   projectId: string | null;
@@ -76,13 +58,6 @@ export class SnapshotBuilder {
     );
     if (ag.length) sections.push(`<agents>\n${renderList(ag)}\n</agents>`);
 
-    const sk = clipList(
-      lists.skills,
-      this.settings.getInt("inject_skills_max_items"),
-      this.settings.getInt("inject_skills_max_chars"),
-    );
-    if (sk.length) sections.push(`<skills>\n${renderList(sk)}\n</skills>`);
-
     // <memory>
     const mem = input.memoryProfile?.trim();
     if (mem) {
@@ -92,9 +67,6 @@ export class SnapshotBuilder {
 
     // <project>
     sections.push(`<project>\npath: ${input.projectPath}\n</project>`);
-
-    // <codegraph>（固定文案，随快照缓存保 KV 前缀稳定）
-    sections.push(CODEGRAPH_GUIDE);
 
     return sections.join("\n\n");
   }

@@ -37,8 +37,6 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   { key: "inject_knowledge_max_chars", type: "int", defaultValue: "2000", min: 0, max: 20000, description: "知识清单注入字符上限" },
   { key: "inject_agents_max_items", type: "int", defaultValue: "20", min: 0, max: 500, description: "Agents 清单条数上限" },
   { key: "inject_agents_max_chars", type: "int", defaultValue: "2000", min: 0, max: 20000, description: "Agents 清单字符上限" },
-  { key: "inject_skills_max_items", type: "int", defaultValue: "20", min: 0, max: 500, description: "技能清单条数上限" },
-  { key: "inject_skills_max_chars", type: "int", defaultValue: "2000", min: 0, max: 20000, description: "技能清单字符上限" },
   { key: "inject_memory_max_chars", type: "int", defaultValue: "2000", min: 0, max: 20000, description: "L2 项目画像全文注入字符上限" },
 
   // ── L1 条目与召回 ──
@@ -64,19 +62,18 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   { key: "l2_max_interval_hours", type: "int", defaultValue: "24", min: 1, max: 720, description: "L2 画像凝练最大间隔" },
   { key: "l2_max_chars", type: "int", defaultValue: "2000", min: 200, max: 20000, description: "项目画像字符上限" },
 
-  // ── 技能自动抽取（DESIGN 决策 68，默认关，成本可控）──
-  { key: "skill_extract_enabled", type: "bool", defaultValue: "false", description: "技能自动抽取总闸（关掉则 L1 后不抽技能）" },
-  { key: "skill_extract_min_confidence", type: "int", defaultValue: "70", min: 0, max: 100, description: "低于此置信度的抽取技能丢弃" },
-  { key: "skill_extract_max_messages", type: "int", defaultValue: "12", min: 1, max: 100, description: "单次技能抽取读取的最近 L0 消息上限" },
-  { key: "skill_extract_max_items", type: "int", defaultValue: "3", min: 1, max: 20, description: "单批技能抽取落库条数上限" },
+  // ── 过期记忆维护（DESIGN 决策 76：调度器清扫 + LLM 评审 delete/rewrite/keep）──
+  { key: "memory_expiry_enabled", type: "bool", defaultValue: "true", description: "过期记忆清扫总闸（关掉则调度器不做过期评审）" },
+  { key: "memory_expiry_days_episodic", type: "int", defaultValue: "30", min: 0, max: 3650, description: "episodic 类记忆超龄 N 天进入过期评审候选（0=永不过期）" },
+  { key: "memory_expiry_days_artifact", type: "int", defaultValue: "90", min: 0, max: 3650, description: "artifact 类记忆超龄 N 天进入候选（0=永不过期）" },
+  { key: "memory_expiry_days_other", type: "int", defaultValue: "0", min: 0, max: 3650, description: "其余类型（fact/method/instruction/persona）超龄 N 天进入候选（默认 0=永不过期，语义过期交给冲突检测）" },
+  { key: "memory_expiry_interval_hours", type: "int", defaultValue: "24", min: 1, max: 8760, description: "过期清扫最小间隔（小时），调度器每 tick 检查节流" },
+  { key: "memory_expiry_max_items", type: "int", defaultValue: "20", min: 1, max: 200, description: "单轮每项目评审条数上限（最老优先，成本可控）" },
 
   // ── 其他 ──
   { key: "extraction_enabled", type: "bool", defaultValue: "true", description: "写侧提取总闸（关掉只停提取不停注入召回）" },
   { key: "memory_extract_max_items", type: "int", defaultValue: "10", min: 1, max: 100, description: "单批 L1 提取条数上限" },
   { key: "memory_similarity_threshold", type: "float", defaultValue: "0.82", min: 0, max: 1, description: "冲突检测候选召回的相关度下限" },
-  { key: "codegraph_max_concurrent", type: "int", defaultValue: "2", min: 1, max: 16, description: "CodeGraph 并发索引项目数上限" },
-  { key: "codegraph_enabled", type: "bool", defaultValue: "true", description: "CodeGraph 索引总闸（关掉停首建/对话增量/查询返回未启用提示）" },
-  { key: "codegraph_reindex_every_conversations", type: "int", defaultValue: "5", min: 0, max: 1000, description: "每累积 N 轮对话增量索引一次（0=关闭对话触发，仅手动重建）" },
   { key: "session_ttl_minutes", type: "int", defaultValue: "120", min: 1, max: 10080, description: "会话快照 TTL，超时同 key 重建" },
 
   // ── SQL 查询工具（MCP sql_query_*，只读）──

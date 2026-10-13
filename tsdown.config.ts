@@ -9,10 +9,9 @@ export default defineConfig({
   platform: "node",
   clean: true,
   dts: false,
-  // 二进制/外部依赖不打包，运行时加载
+  // 外部依赖不打包，运行时加载
   external: [
     "sqlite-vec",
-    "web-tree-sitter",
     "@modelcontextprotocol/sdk",
   ],
 });

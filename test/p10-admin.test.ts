@@ -16,12 +16,11 @@ import { L0Recorder } from "../src/memory/l0-recorder.js";
 import { L1Store } from "../src/memory/l1-store.js";
 import { L2Refiner } from "../src/memory/l2-refiner.js";
 import { MemoryRecaller } from "../src/memory/recall.js";
-import { CodeGraphService } from "../src/codegraph/service.js";
 import { SqlService } from "../src/sql/service.js";
 import { createApp, type AppDeps } from "../src/server.js";
 
 /**
- * P10 管理 API：/api/db 备份、/api/memories 查看/删除。
+ * P10 管理 API：/api/memories 查看/删除等。（/api/db 备份已随功能移除。）
  */
 
 let dataDirBak: string | undefined;
@@ -54,12 +53,10 @@ function makeApp() {
   const l1Store = new L1Store(raw, true, false);
   const l2 = new L2Refiner(raw, l1Store, settings);
   const recaller = new MemoryRecaller(l1Store, settings);
-  const codegraph = new CodeGraphService(raw, settings, projects);
-  settings.set("codegraph_enabled", "false");
   const deps: AppDeps = {
-    api: { models, settings, projects, denoise, assets, codegraph, l0, l1: l1Store, l2, raw },
-    gateway: { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller, codegraph },
-    internal: { projects, assets, l1: l1Store, l0, l2, recaller, settings, codegraph, sql: new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") }) },
+    api: { models, settings, projects, denoise, assets, l0, l1: l1Store, l2 },
+    gateway: { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller },
+    internal: { projects, assets, l1: l1Store, l0, l2, recaller, settings, sql: new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") }) },
   };
   return { app: createApp(deps), raw, models, projects, denoise, assets, l0, l1Store, settings };
 }
@@ -116,56 +113,6 @@ describe("/api/projects", () => {
     const { app } = makeApp();
     const r = await call(app, "POST", "/api/projects/update", { id: "nope", name: "x" });
     expect(r.status).toBe(404);
-  });
-});
-
-describe("/api/db", () => {
-  it("POST /backup 产出一致性快照文件", async () => {
-    const { app, projects } = makeApp();
-    projects.upsertOnRequest("d:/work/p"); // 写点数据确保非空库
-    const r = await call(app, "POST", "/api/db/backup");
-    expect(r.status).toBe(200);
-    expect(r.body.success).toBe(true);
-    const file = (r.body.data as { path: string }).path;
-    expect(existsSync(file)).toBe(true);
-
-    // 备份文件可独立打开且含数据
-    const check = new DatabaseSync(file, { readOnly: true });
-    const cnt = check.prepare("SELECT count(*) AS c FROM projects").get() as { c: number };
-    expect(cnt.c).toBeGreaterThanOrEqual(1);
-    check.close();
-
-    const list = await call(app, "POST", "/api/db/list");
-    expect((list.body.data as { list: unknown[] }).list.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("POST /list 支持 keyword 对文件名模糊", async () => {
-    const { app } = makeApp();
-    const r = await call(app, "POST", "/api/db/backup");
-    const name = (r.body.data as { path: string }).path.split(/[\\/]/).pop()!;
-    const hit = await call(app, "POST", "/api/db/list", { keyword: name.slice(0, 15) });
-    expect((hit.body.data as { list: { name: string }[] }).list.map((x) => x.name)).toContain(name);
-    const miss = await call(app, "POST", "/api/db/list", { keyword: "zzz-no-such-backup-zzz" });
-    expect((miss.body.data as { list: unknown[] }).list).toHaveLength(0);
-  });
-
-  it("POST /delete 删除备份；非法名/不存在被拒", async () => {
-    const { app } = makeApp();
-    const r = await call(app, "POST", "/api/db/backup");
-    const name = (r.body.data as { path: string }).path.split(/[\\/]/).pop()!;
-    const file = (r.body.data as { path: string }).path;
-
-    // 路径穿越 / 非 .db / 缺参数 → 400
-    expect((await call(app, "POST", "/api/db/delete", { name: "../gateway.db" })).status).toBe(400);
-    expect((await call(app, "POST", "/api/db/delete", { name: "a.txt" })).status).toBe(400);
-    expect((await call(app, "POST", "/api/db/delete", {})).status).toBe(400);
-    // 不存在 → 404
-    expect((await call(app, "POST", "/api/db/delete", { name: "gateway-1970-01-01_00-00-00.db" })).status).toBe(404);
-
-    // 正常删除
-    const d = await call(app, "POST", "/api/db/delete", { name });
-    expect(d.status).toBe(200);
-    expect(existsSync(file)).toBe(false);
   });
 });
 
@@ -372,10 +319,10 @@ describe("/api/tools", () => {
     const r = await call(app, "POST", "/api/tools/list", { pageSize: 100 });
     expect(r.status).toBe(200);
     const page = r.body.data as { list: { id: string; name: string; group: string; description: string }[]; totalCount: number };
-    expect(page.totalCount).toBeGreaterThanOrEqual(27);
+    expect(page.totalCount).toBeGreaterThanOrEqual(18);
     const names = page.list.map((t) => t.name);
     expect(names).toContain("memory_search");
-    expect(names).toContain("codegraph_status");
+    expect(names).not.toContain("codegraph_status"); // CodeGraph 已移除
     expect(names).toContain("sql_query_sqlite");
     // 分组派生正确
     expect(page.list.find((t) => t.name === "sql_query_sqlite")?.group).toBe("SQL");
@@ -386,10 +333,10 @@ describe("/api/tools", () => {
 
   it("POST /list keyword 模糊匹配名称/描述", async () => {
     const { app } = makeApp();
-    const byName = await call(app, "POST", "/api/tools/list", { keyword: "codegraph", pageSize: 100 });
+    const byName = await call(app, "POST", "/api/tools/list", { keyword: "sql_list_tables", pageSize: 100 });
     const nameList = (byName.body.data as { list: { name: string }[] }).list;
-    expect(nameList.length).toBeGreaterThanOrEqual(8);
-    expect(nameList.every((t) => t.name.includes("codegraph"))).toBe(true);
+    expect(nameList.length).toBeGreaterThanOrEqual(4);
+    expect(nameList.every((t) => t.name.includes("sql_list_tables"))).toBe(true);
     const byDesc = await call(app, "POST", "/api/tools/list", { keyword: "画像", pageSize: 100 });
     expect((byDesc.body.data as { list: unknown[] }).list.length).toBeGreaterThan(0);
     const none = await call(app, "POST", "/api/tools/list", { keyword: "不存在的工具xyz", pageSize: 100 });
@@ -487,7 +434,7 @@ describe("/api/* 结构复核", () => {
     expect(names).toEqual(["a-llm", "z-llm", "b-emb"]);
   });
 
-  it("models 被设置引用：list 标 inUse，update/delete 禁止", async () => {
+  it("models 被设置引用：list 标 inUse，可编辑但禁改分类、禁删除（决策 77）", async () => {
     const { app, models, settings } = makeApp();
     const m = models.create({ category: "llm", name: "bound", url: "u", key: "k", model: "l" });
     settings.set("gateway_llm", m.id); // 绑定到设置
@@ -495,10 +442,17 @@ describe("/api/* 结构复核", () => {
     const row = (list.body.data as { list: { id: string; inUse: boolean; usedBy: string[] }[] }).list.find((x) => x.id === m.id)!;
     expect(row.inUse).toBe(true);
     expect(row.usedBy).toContain("gateway_llm");
-    // 编辑被禁
-    const upd = await call(app, "POST", "/api/models/update", { id: m.id, name: "changed" });
-    expect(upd.status).toBe(400);
-    expect(upd.body.message).toContain("不可编辑");
+    // 编辑 url/name/key/model 放开（下一调用即生效）
+    const upd = await call(app, "POST", "/api/models/update", { id: m.id, name: "changed", url: "u2", key: "k2", model: "l2" });
+    expect(upd.status).toBe(200);
+    expect((upd.body.data as { name: string; url: string }).name).toBe("changed");
+    // 改分类被禁（引用中）
+    const cat = await call(app, "POST", "/api/models/update", { id: m.id, category: "embedding" });
+    expect(cat.status).toBe(400);
+    expect(cat.body.message).toContain("不可修改分类");
+    // 分类原值回传（前端 disabled 字段仍提交）不算变更 → 放行
+    const same = await call(app, "POST", "/api/models/update", { id: m.id, category: "llm", name: "again" });
+    expect(same.status).toBe(200);
     // 删除被禁
     const del = await call(app, "POST", "/api/models/delete", { id: m.id });
     expect(del.status).toBe(400);
@@ -507,6 +461,30 @@ describe("/api/* 结构复核", () => {
     settings.set("gateway_llm", "");
     const del2 = await call(app, "POST", "/api/models/delete", { id: m.id });
     expect(del2.body.success).toBe(true);
+  });
+
+  it("models 未被引用也禁改分类（决策 77 收紧：编辑恒禁换类）", async () => {
+    const { app, models } = makeApp();
+    const m = models.create({ category: "llm", name: "free", url: "u", key: "k", model: "l" });
+    const r = await call(app, "POST", "/api/models/update", { id: m.id, category: "embedding" });
+    expect(r.status).toBe(400);
+    expect(r.body.message).toContain("不可修改分类");
+    // 其余字段仍可编辑
+    const ok = await call(app, "POST", "/api/models/update", { id: m.id, name: "free2" });
+    expect(ok.status).toBe(200);
+  });
+
+  it("models 被引用的 embedding 模型改 url → 触发全量向量失效（决策 77）", async () => {
+    const { app, models, settings } = makeApp();
+    const m = models.create({ category: "embedding", name: "emb", url: "u", key: "k", model: "e" });
+    settings.set("embedding_model", m.id);
+    // 改 url（被引用 + embedding + url 变）→ 响应带 vectorsInvalidated 字段（本测试 vec 关闭，值为 0）
+    const r = await call(app, "POST", "/api/models/update", { id: m.id, url: "u2" });
+    expect(r.status).toBe(200);
+    expect((r.body.data as { vectorsInvalidated?: number }).vectorsInvalidated).toBe(0);
+    // 仅改 name（url/model 不变）→ 不触发失效分支，无该字段
+    const r2 = await call(app, "POST", "/api/models/update", { id: m.id, name: "emb2" });
+    expect((r2.body.data as { vectorsInvalidated?: number }).vectorsInvalidated).toBeUndefined();
   });
 
   it("denoise-rules list 分页 + keyword 过滤", async () => {
@@ -607,76 +585,16 @@ describe("/api/* 结构复核", () => {
     expect(d.enabled).toBe(true);
   });
 
-  it("skills update 只传 enabled 不清空标题（回归）", async () => {
-    const { app, assets } = makeApp();
-    const s = assets.createSkill({ name: "技能A", description: "d", body: "正文" });
-    const r = await call(app, "POST", "/api/skills/update", { id: s.id, enabled: true });
-    const d = r.body.data as { name: string; description: string; body: string; enabled: boolean };
-    expect(d.name).toBe("技能A");
-    expect(d.description).toBe("d");
-    expect(d.body).toBe("正文");
-    expect(d.enabled).toBe(true);
-  });
-
-  it("skills 正文变化生成新版本，旧版置 superseded，版本链可回溯", async () => {
-    const { app, assets } = makeApp();
-    const s = assets.createSkill({ name: "发布", description: "d", body: "v1 正文", enabled: true });
-    expect(s.version).toBe(1);
-    // 改正文 → 新版本
-    const r = await call(app, "POST", "/api/skills/update", { id: s.id, body: "v2 正文" });
-    const d = r.body.data as { id: string; version: number; body: string; versioned: boolean };
-    expect(d.versioned).toBe(true);
-    expect(d.version).toBe(2);
-    expect(d.body).toBe("v2 正文");
-    expect(d.id).not.toBe(s.id);
-    // 旧版仍在库，置 superseded 指向新版
-    const old = assets.getSkill(s.id)!;
-    expect(old.status).toBe("superseded");
-    expect(old.supersededBy).toBe(d.id);
-    // 版本链：给新版 id 也能回溯全部两版，version 升序
-    const chain = await call(app, "POST", "/api/skills/versions", { id: d.id });
-    const list = chain.body.data as { version: number }[];
-    expect(list.map((x) => x.version)).toEqual([1, 2]);
-    // list 只含 active 版
-    const ls = await call(app, "POST", "/api/skills/list", {});
-    const active = (ls.body.data as { list: { id: string }[] }).list.filter((x) => x.id === s.id);
-    expect(active.length).toBe(0);
-  });
-
-  it("skills 仅元数据变化不产生新版本", async () => {
-    const { assets } = makeApp();
-    const s = assets.createSkill({ name: "稳定", description: "d", body: "正文", enabled: false });
-    const res = assets.updateSkill(s.id, { enabled: true })!;
-    expect(res.versioned).toBe(false);
-    expect(res.row.version).toBe(1);
-    expect(res.row.id).toBe(s.id);
-    expect(res.row.enabled).toBe(true);
-  });
-
-  it("agents/skills/knowledge create：描述必填，正文必填，缺字段报 400", async () => {
+  it("agents/knowledge create：描述必填，正文必填，缺字段报 400", async () => {
     const { app } = makeApp();
     // agents：仅标题、缺描述 → 400；有描述缺正文 → 400
     expect((await call(app, "POST", "/api/agents/create", { name: "a1" })).status).toBe(400);
     expect((await call(app, "POST", "/api/agents/create", { name: "a1", description: "d" })).status).toBe(400);
     const okA = await call(app, "POST", "/api/agents/create", { name: "a1", description: "d", body: "b" });
     expect(okA.status).toBe(200);
-    // skills：缺描述 → 400；有描述缺正文 → 400
-    expect((await call(app, "POST", "/api/skills/create", { name: "s1" })).status).toBe(400);
-    expect((await call(app, "POST", "/api/skills/create", { name: "s1", description: "d" })).status).toBe(400);
-    // 齐备 → 成功
-    const ok = await call(app, "POST", "/api/skills/create", { name: "s1", description: "d", body: "b" });
-    expect(ok.status).toBe(200);
     // knowledge：缺描述 → 400；有描述缺正文 → 400
     expect((await call(app, "POST", "/api/knowledge/create", { title: "k1", scope: "global" })).status).toBe(400);
     expect((await call(app, "POST", "/api/knowledge/create", { title: "k1", description: "d", scope: "global" })).status).toBe(400);
-  });
-
-  it("skills 不再包含 resources 字段", async () => {
-    const { app, assets } = makeApp();
-    const s = assets.createSkill({ name: "无资源", description: "d", body: "b" });
-    expect((s as unknown as Record<string, unknown>).resources).toBeUndefined();
-    const r = await call(app, "POST", "/api/skills/get", { id: s.id });
-    expect((r.body.data as Record<string, unknown>).resources).toBeUndefined();
   });
 
   it("knowledge list 按 sortOrder + keyword，scope=project 缺 projectId 报 400", async () => {

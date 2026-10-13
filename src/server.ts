@@ -25,8 +25,7 @@ import { L2Refiner } from "./memory/l2-refiner.js";
 import { ExtractionScheduler } from "./memory/scheduler.js";
 import { MemoryRecaller } from "./memory/recall.js";
 import { EmbeddingBackfiller } from "./memory/embed-backfill.js";
-import { SkillExtractor } from "./memory/skill-extractor.js";
-import { CodeGraphService } from "./codegraph/service.js";
+import { MemoryExpirer } from "./memory/expiry.js";
 import { SqlService } from "./sql/service.js";
 
 /**
@@ -34,6 +33,7 @@ import { SqlService } from "./sql/service.js";
  *
  * 组成：/health + /v1/chat/completions 网关主链路 + /api/* 管理 + /mcp 工具面 + 前端 SPA 托管。
  * 业务配置全 DB；本文件只读取 PORT / DATA_DIR 两个环境变量。
+ * （CodeGraph 功能已整体移除。）
  */
 
 const log = createLogger("server");
@@ -93,7 +93,6 @@ export function bootstrap(): {
   settings: SettingsService;
   projects: ProjectRepo;
   scheduler: ExtractionScheduler;
-  codegraph: CodeGraphService;
 } {
   mkdirSync(dataDir(), { recursive: true });
 
@@ -115,26 +114,25 @@ export function bootstrap(): {
   l2.pathOf = (id) => projects.findById(id)?.path;
   const recaller = new MemoryRecaller(l1Store, settings);
   const backfiller = new EmbeddingBackfiller(l1Store, settings);
-  const skillExtractor = new SkillExtractor(handle.raw, assets, settings);
-  const scheduler = new ExtractionScheduler(handle.raw, settings, l1Extractor, l2, backfiller, skillExtractor);
-  const codegraph = new CodeGraphService(handle.raw, settings, projects);
+  const expirer = new MemoryExpirer(l1Store, settings);
+  const scheduler = new ExtractionScheduler(handle.raw, settings, l1Extractor, l2, backfiller, expirer);
   const sql = new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") });
 
-  const gatewayDeps: GatewayDeps = { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller, codegraph };
-  const internalDeps: InternalDeps = { projects, assets, l1: l1Store, l0, l2, recaller, settings, codegraph, sql };
+  const gatewayDeps: GatewayDeps = { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller };
+  const internalDeps: InternalDeps = { projects, assets, l1: l1Store, l0, l2, recaller, settings, sql };
 
   const app = createApp({
-    api: { models, settings, projects, denoise, assets, codegraph, l0, l1: l1Store, l2, raw: handle.raw },
+    api: { models, settings, projects, denoise, assets, l0, l1: l1Store, l2 },
     gateway: gatewayDeps,
     internal: internalDeps,
     healthExtra: { fts5: handle.fts5Available, vec: handle.vecAvailable },
   });
-  return { app, handle, settings, projects, scheduler, codegraph };
+  return { app, handle, settings, projects, scheduler };
 }
 
 async function main(): Promise<void> {
-  const { app, handle, scheduler, codegraph } = bootstrap();
-  const background = createBackgroundTasks(scheduler, codegraph);
+  const { app, handle, scheduler } = bootstrap();
+  const background = createBackgroundTasks(scheduler);
   await background.start();
 
   const port = listenPort();

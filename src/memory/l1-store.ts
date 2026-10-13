@@ -189,6 +189,17 @@ export class L1Store {
   }
 
   /**
+   * 仅更新 metadata JSON 与 updated_at（过期评审 keep 续期锚点用，DESIGN 决策 76）。
+   * 不动正文 → FTS/向量无需变更。行不存在返回 false。
+   */
+  patchMetadata(id: string, metadata: string): boolean {
+    const res = this.raw
+      .prepare("UPDATE mem_l1 SET metadata = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
+      .run(metadata, Date.now(), id);
+    return Number(res.changes) > 0;
+  }
+
+  /**
    * 冲突决策落库：
    *  - store：直接 insert；
    *  - update/merge：insert 新条目 + 把 target_ids 置 superseded_by=新 id；
@@ -216,6 +227,13 @@ export class L1Store {
     this.raw
       .prepare("INSERT OR REPLACE INTO mem_l1_vec (l1_id, embedding, project_id) VALUES (?,?,?)")
       .run(l1Id, vecToBlob(vec), projectId);
+  }
+
+  /** 全量失效向量（embedding 模型 url/model 变更后调用，DESIGN 决策 77）：
+   *  清空 mem_l1_vec，补嵌入器下个 tick 按新模型全量重建。返回删除行数。 */
+  invalidateAllVectors(): number {
+    if (!this.vecAvailable) return 0;
+    return Number(this.raw.prepare("DELETE FROM mem_l1_vec").run().changes);
   }
 
   /** 向量 kNN 检索（按项目分区），返回 id + cosine distance（越小越近）。 */

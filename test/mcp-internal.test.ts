@@ -17,7 +17,6 @@ import { L0Recorder } from "../src/memory/l0-recorder.js";
 import { L1Store } from "../src/memory/l1-store.js";
 import { L2Refiner } from "../src/memory/l2-refiner.js";
 import { MemoryRecaller } from "../src/memory/recall.js";
-import { CodeGraphService } from "../src/codegraph/service.js";
 import { SqlService } from "../src/sql/service.js";
 import { createApp, type AppDeps } from "../src/server.js";
 import type { InternalDeps } from "../src/api/internal.js";
@@ -42,13 +41,11 @@ function makeInternal() {
   const l1Store = new L1Store(raw, true, false);
   const l2 = new L2Refiner(raw, l1Store, settings);
   const recaller = new MemoryRecaller(l1Store, settings);
-  const codegraph = new CodeGraphService(raw, settings, projects);
-  settings.set("codegraph_enabled", "false"); // 测试不启动 watcher/索引
   const sql = new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") });
-  const internal: InternalDeps = { projects, assets, l1: l1Store, l0, l2, recaller, settings, codegraph, sql };
+  const internal: InternalDeps = { projects, assets, l1: l1Store, l0, l2, recaller, settings, sql };
   const deps: AppDeps = {
-    api: { models, settings, projects, denoise, assets, codegraph, l0, l1: l1Store, l2, raw },
-    gateway: { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller, codegraph },
+    api: { models, settings, projects, denoise, assets, l0, l1: l1Store, l2 },
+    gateway: { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller },
     internal,
   };
   return { app: createApp(deps), projects, assets, l1Store, l0, l2, sessions, raw };
@@ -83,14 +80,11 @@ describe("internal read API", () => {
     expect((r.body.data as { body: string }).body).toBe("完整正文内容");
   });
 
-  it("agents/skills list+read", async () => {
+  it("agents list+read", async () => {
     const { app, assets } = makeInternal();
     const a = assets.createAgent({ name: "reviewer", description: "评审", body: '{"command":"x"}', enabled: true });
-    const s = assets.createSkill({ name: "deploy", description: "发布", body: "步骤", enabled: true });
     expect(((await get(app, "/internal/agents/list")).body.data as unknown[]).length).toBe(1);
     expect(((await get(app, `/internal/agents/read?id=${a.id}`)).body.data as { body: string }).body).toContain("command");
-    expect(((await get(app, "/internal/skills/list")).body.data as unknown[]).length).toBe(1);
-    expect(((await get(app, `/internal/skills/read?id=${s.id}`)).body.data as { body: string }).body).toBe("步骤");
   });
 
   it("memory/search + memory/read（含溯源）", async () => {
@@ -209,20 +203,20 @@ describe("MCP 薄壳端到端（真实 HTTP + InMemory client）", () => {
   it("listTools 返回全部工具定义（list 工具已移除，决策 70）", async () => {
     const client = await mcpClient();
     const tools = await client.listTools();
-    expect(tools.tools.length).toBeGreaterThanOrEqual(27);
+    expect(tools.tools.length).toBeGreaterThanOrEqual(18);
     const toolNames = tools.tools.map((t) => t.name);
     expect(toolNames).toContain("memory_search");
     expect(toolNames).toContain("knowledge_read");
-    expect(toolNames).toContain("codegraph_search");
-    expect(toolNames).toContain("codegraph_impact");
-    expect(toolNames).toContain("codegraph_status");
     expect(toolNames).toContain("sql_query_sqlite");
     expect(toolNames).toContain("sql_list_tables_mysql");
     expect(toolNames).toContain("sql_describe_table_sqlserver");
+    // CodeGraph 已移除：codegraph_* 工具不再暴露
+    expect(toolNames).not.toContain("codegraph_search");
+    expect(toolNames).not.toContain("codegraph_status");
     // knowledge/agent/skill 的 list 工具不再开放（清单已注入系统提示，按 id read 即可）
     expect(toolNames).not.toContain("knowledge_list");
     expect(toolNames).not.toContain("agent_list");
-    expect(toolNames).not.toContain("skill_list");
+    expect(toolNames).not.toContain("skill_read");
     await client.close();
   });
 

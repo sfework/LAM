@@ -5,7 +5,7 @@ import type { LlmCallConfig } from "../llm/client.js";
 import type { L1Extractor } from "./l1-extractor.js";
 import type { L2Refiner } from "./l2-refiner.js";
 import type { EmbeddingBackfiller } from "./embed-backfill.js";
-import type { SkillExtractor } from "./skill-extractor.js";
+import type { MemoryExpirer } from "./expiry.js";
 
 const log = createLogger("memory:pipeline");
 
@@ -38,7 +38,9 @@ export class ExtractionScheduler {
   private readonly l1: L1Extractor;
   private readonly l2: L2Refiner;
   private readonly backfiller: EmbeddingBackfiller | null;
-  private readonly skill: SkillExtractor | null;
+  private readonly expirer: MemoryExpirer | null;
+  /** 上次过期清扫时刻（内存节流，重启后重跑一次可接受：评审幂等）。 */
+  private lastExpiryAt = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly projectChains = new Map<string, Promise<void>>();
   // 在途批次（pipeline_state.id）：处理期间 DB 缓冲不再提前清空（防进程被 kill 丢批），
@@ -52,14 +54,14 @@ export class ExtractionScheduler {
     l1: L1Extractor,
     l2: L2Refiner,
     backfiller: EmbeddingBackfiller | null = null,
-    skill: SkillExtractor | null = null,
+    expirer: MemoryExpirer | null = null,
   ) {
     this.raw = raw;
     this.settings = settings;
     this.l1 = l1;
     this.l2 = l2;
     this.backfiller = backfiller;
-    this.skill = skill;
+    this.expirer = expirer;
   }
 
   start(intervalMs = 5_000): void {
@@ -86,6 +88,32 @@ export class ExtractionScheduler {
     return m ? { baseUrl: m.url, apiKey: m.key, model: m.model } : null;
   }
 
+  /**
+   * 过期清扫（DESIGN 决策 76）：总闸 memory_expiry_enabled，每 memory_expiry_interval_hours
+   * 至多实跑一次；逐项目串行，单批上限 memory_expiry_max_items，评审 LLM 不可用/坏输出时整轮跳过（不删）。
+   */
+  private async runExpiry(): Promise<void> {
+    const expirer = this.expirer;
+    if (!expirer?.enabled) return;
+    const intervalMs = this.settings.getInt("memory_expiry_interval_hours") * 3_600_000;
+    const now = Date.now();
+    if (now - this.lastExpiryAt < intervalMs) return;
+    this.lastExpiryAt = now; // 先占位：评审失败也不在本轮重试（下一间隔再试）
+    const llm = this.memoryLlm();
+    if (!llm) return;
+    const projects = this.raw
+      .prepare("SELECT DISTINCT project_id FROM mem_l1 WHERE deleted_at IS NULL AND superseded_by IS NULL")
+      .all() as { project_id: string }[];
+    for (const p of projects) {
+      try {
+        const res = await expirer.sweepOneProject(p.project_id, llm);
+        if (res.scanned) log.info({ projectId: p.project_id, ...res }, "过期记忆评审轮完成");
+      } catch (err) {
+        log.warn({ projectId: p.project_id, err: String(err) }, "过期清扫异常（忽略）");
+      }
+    }
+  }
+
   /** 对所有有活跃 L1 的项目补嵌入（幂等，增量）。 */
   private async runBackfill(): Promise<void> {
     if (!this.backfiller) return;
@@ -107,6 +135,9 @@ export class ExtractionScheduler {
 
     // 补嵌入（用 embedding_model，独立于 memory_llm）
     await this.runBackfill();
+
+    // 过期记忆清扫（用 memory_llm 评审，按 interval_hours 节流；失败不影响主管线）
+    await this.runExpiry();
 
     const llm = this.memoryLlm();
     if (!llm) return 0; // memory_llm 未配置，静默等待
@@ -173,14 +204,6 @@ export class ExtractionScheduler {
         .prepare("UPDATE pipeline_state SET warmup_threshold = ?, last_l1_at = COALESCE(?, last_l1_at), buffered_message_ids = ?, conversation_count = ? WHERE id = ?")
         .run(next, res.stored > 0 ? now : null, JSON.stringify(remaining), remainingCount, row.id);
       log.debug({ projectId: row.project_id, ...res, nextThreshold: next }, "L1 批次完成");
-      // L1 成功后按需抽技能（复用本批缓冲消息；受 skill_extract_enabled 总闸控制，失败不影响 L1 结果）
-      if (this.skill?.enabled) {
-        try {
-          await this.skill.extract(row.project_id, buffered, llm);
-        } catch (err) {
-          log.warn({ projectId: row.project_id, err: String(err) }, "技能抽取异常（忽略，不影响记忆）");
-        }
-      }
     } catch (err) {
       // 失败：DB 缓冲从未被提前清空，本批消息（含处理期间新到的）原样留在 buffered_message_ids，
       // 下轮 tick（或重启后）自动重试，无需回填（决策 72）。仅不动 warm-up 阈值。

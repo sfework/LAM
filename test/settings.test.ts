@@ -18,14 +18,14 @@ describe("migrations", () => {
       (r) => r.name,
     );
     for (const t of [
-      "projects", "prompts", "agents", "skills", "knowledge", "denoise_rules",
+      "projects", "prompts", "agents", "knowledge", "denoise_rules",
       "models", "settings", "mem_l0", "mem_l1", "mem_l2", "extract_queue",
-      "pipeline_state", "sessions", "cg_status",
+      "pipeline_state", "sessions",
     ]) {
       expect(names, `缺表 ${t}`).toContain(t);
     }
-    // 决策 67：图数据外置到 {DATA_DIR}/codegraph/<项目>/codegraph.db，旧 cg_* 明细表已全部删除
-    for (const gone of ["cg_files", "cg_symbols", "cg_edges", "cg_calls", "cg_extends", "cg_imports", "cg_bindings"]) {
+    // CodeGraph 功能已整体移除：cg_* 全部表（含状态表 cg_status）均已删除
+    for (const gone of ["cg_status", "cg_files", "cg_symbols", "cg_edges", "cg_calls", "cg_extends", "cg_imports", "cg_bindings"]) {
       expect(names, `应已删除 ${gone}`).not.toContain(gone);
     }
   });

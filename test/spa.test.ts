@@ -16,7 +16,6 @@ import { L0Recorder } from "../src/memory/l0-recorder.js";
 import { L1Store } from "../src/memory/l1-store.js";
 import { L2Refiner } from "../src/memory/l2-refiner.js";
 import { MemoryRecaller } from "../src/memory/recall.js";
-import { CodeGraphService } from "../src/codegraph/service.js";
 import { SqlService } from "../src/sql/service.js";
 import { createApp, type AppDeps } from "../src/server.js";
 
@@ -66,12 +65,10 @@ function makeApp(spaDistDir?: string) {
   const l1Store = new L1Store(raw, true, false);
   const l2 = new L2Refiner(raw, l1Store, settings);
   const recaller = new MemoryRecaller(l1Store, settings);
-  const codegraph = new CodeGraphService(raw, settings, projects);
-  settings.set("codegraph_enabled", "false");
   const deps: AppDeps = {
-    api: { models, settings, projects, denoise, assets, codegraph, l0, l1: l1Store, l2, raw },
-    gateway: { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller, codegraph },
-    internal: { projects, assets, l1: l1Store, l0, l2, recaller, settings, codegraph, sql: new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") }) },
+    api: { models, settings, projects, denoise, assets, l0, l1: l1Store, l2 },
+    gateway: { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller },
+    internal: { projects, assets, l1: l1Store, l0, l2, recaller, settings, sql: new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") }) },
     spaDistDir: spaDistDir ?? tmpDist,
   };
   return { app: createApp(deps), settings };

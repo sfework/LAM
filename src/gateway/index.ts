@@ -16,7 +16,6 @@ import type { L0Recorder } from "../memory/l0-recorder.js";
 import type { L2Refiner } from "../memory/l2-refiner.js";
 import type { MemoryRecaller } from "../memory/recall.js";
 import { prependRecall } from "../memory/recall.js";
-import type { CodeGraphService } from "../codegraph/service.js";
 import { createLogger } from "../infra/logger.js";
 
 const log = createLogger("gateway");
@@ -31,7 +30,6 @@ export interface GatewayDeps {
   l0: L0Recorder;
   l2: L2Refiner;
   recaller: MemoryRecaller;
-  codegraph: CodeGraphService;
 }
 
 /** 统一 OpenAI 错误格式（DESIGN 决策 22：友好提示，不抛裸异常）。 */
@@ -51,15 +49,6 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
     // 1. 项目登记（header 优先，正文兜底）
     const project = resolveProject(deps, c, body);
     if (project.error) return openaiError(c, 400, "invalid_request", project.error);
-
-    // 1.5 CodeGraph 激活（幂等、非阻塞：首次排队全量首建 + 挂载 watcher）
-    if (project.projectId) {
-      try {
-        deps.codegraph.activate(project.projectId, project.path);
-      } catch (err) {
-        log.warn({ err: String(err), projectId: project.projectId }, "CodeGraph 激活失败（不影响请求）");
-      }
-    }
 
     // 2. 解析协议
     const parsed = chatCompletionsAdapter.parse(body);
@@ -130,12 +119,6 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
             aggregate: agg,
             allRules: deps.denoise.list(),
           });
-          // CodeGraph：累积对话计数，达阈值增量索引（DESIGN 决策 67，fire-and-forget）
-          try {
-            deps.codegraph.onTurn(project.projectId!, project.path);
-          } catch (err) {
-            log.warn({ err: String(err), projectId: project.projectId }, "CodeGraph 对话触发失败（不影响请求）");
-          }
         }
       })
       .catch((err) => log.warn({ err: String(err) }, "旁路聚合/回流异常（不影响已透传响应）"));
@@ -235,7 +218,7 @@ function resolveSnapshot(
 }
 
 /**
- * 后台任务：提取调度器（阶段 6）。CodeGraph watcher 阶段 9 接入。
+ * 后台任务：提取调度器（阶段 6）。（CodeGraph 已移除，不再挂载其启动/停止钩子。）
  */
 export interface GatewayBackground {
   start(): Promise<void>;
@@ -244,20 +227,13 @@ export interface GatewayBackground {
 
 export function createBackgroundTasks(
   scheduler?: { start(): void; stop(): Promise<void> },
-  codegraph?: { start(): void; stop(): Promise<void> },
 ): GatewayBackground {
   return {
     async start() {
       scheduler?.start();
-      try {
-        codegraph?.start();
-      } catch (err) {
-        log.warn({ err: String(err) }, "CodeGraph 启动失败（不影响网关）");
-      }
     },
     async stop() {
       await scheduler?.stop();
-      await codegraph?.stop();
     },
   };
 }

@@ -2,9 +2,10 @@ import type { DatabaseSync } from "node:sqlite";
 import { newId } from "../infra/id.js";
 
 /**
- * 资产仓储（DESIGN §2.4 / §2.5）：prompts / agents / skills / knowledge。
- * 四类同构：enabled 开关 + sort_order（清单取 top）；提示词互斥（最多 1 条生效）。
+ * 资产仓储（DESIGN §2.4 / §2.5）：prompts / agents / knowledge。
+ * 三类同构：enabled 开关 + sort_order（清单取 top）；提示词互斥（最多 1 条生效）。
  * 知识库额外有 scope(global|project)。
+ * （技能 skills 资产已随功能整体移除。）
  */
 
 export interface PromptRow {
@@ -22,21 +23,6 @@ export interface AgentRow {
   body: string;
   enabled: boolean;
   sortOrder: number;
-  updatedAt: number;
-}
-
-export interface SkillRow {
-  id: string;
-  name: string;
-  description: string;
-  body: string;
-  enabled: boolean;
-  sortOrder: number;
-  version: number;
-  status: "active" | "superseded";
-  source: "manual" | "auto";
-  supersededBy: string | null;
-  projectId: string | null;
   updatedAt: number;
 }
 
@@ -65,22 +51,6 @@ function toPrompt(r: Record<string, unknown>): PromptRow {
 }
 function toAgent(r: Record<string, unknown>): AgentRow {
   return { id: r.id as string, name: r.name as string, description: r.description as string, body: r.body as string, enabled: Boolean(r.enabled), sortOrder: r.sort_order as number, updatedAt: r.updated_at as number };
-}
-function toSkill(r: Record<string, unknown>): SkillRow {
-  return {
-    id: r.id as string,
-    name: r.name as string,
-    description: r.description as string,
-    body: r.body as string,
-    enabled: Boolean(r.enabled),
-    sortOrder: r.sort_order as number,
-    version: r.version as number,
-    status: r.status as SkillRow["status"],
-    source: r.source as SkillRow["source"],
-    supersededBy: (r.superseded_by as string | null) ?? null,
-    projectId: (r.project_id as string | null) ?? null,
-    updatedAt: r.updated_at as number,
-  };
 }
 function toKnowledge(r: Record<string, unknown>): KnowledgeRow {
   return { id: r.id as string, title: r.title as string, description: r.description as string, body: r.body as string, scope: r.scope as KnowledgeRow["scope"], projectId: (r.project_id as string | null) ?? null, enabled: Boolean(r.enabled), sortOrder: r.sort_order as number, updatedAt: r.updated_at as number, deletedAt: (r.deleted_at as number | null) ?? null };
@@ -185,133 +155,6 @@ export class AssetsRepo {
     return Number(this.raw.prepare("DELETE FROM agents WHERE id = ?").run(id).changes) > 0;
   }
 
-  // ── skills ──
-  /** 列表：默认仅 active（含全局与各项目）；superseded 历史版经 listSkillVersions 查看。 */
-  listSkills(): SkillRow[] {
-    return (this.raw
-      .prepare("SELECT * FROM skills WHERE status = 'active' ORDER BY sort_order ASC, rowid ASC")
-      .all() as Record<string, unknown>[]).map(toSkill);
-  }
-  getSkill(id: string): SkillRow | undefined {
-    const r = this.raw.prepare("SELECT * FROM skills WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-    return r ? toSkill(r) : undefined;
-  }
-  /** 版本链：给定某版 id，回溯其 active 版并返回全部版本（version 升序）。 */
-  listSkillVersions(id: string): SkillRow[] {
-    const cur = this.getSkill(id);
-    if (!cur) return [];
-    // 沿 superseded_by 上溯到链尾的 active 版（头）
-    let head = cur;
-    const seen = new Set<string>([cur.id]);
-    while (head.status === "superseded" && head.supersededBy && !seen.has(head.supersededBy)) {
-      const next = this.getSkill(head.supersededBy);
-      if (!next) break;
-      seen.add(next.id);
-      head = next;
-    }
-    // 从头顶反向收集整条链：每行 superseded_by 指向其后继（更新版），故按 superseded_by = 当前 id 找前驱（旧版）
-    const chain: SkillRow[] = [head];
-    const collected = new Set<string>([head.id]);
-    let node = head;
-    for (;;) {
-      const r = this.raw.prepare("SELECT * FROM skills WHERE superseded_by = ? LIMIT 1").get(node.id) as
-        | Record<string, unknown>
-        | undefined;
-      if (!r) break;
-      const prev = toSkill(r);
-      if (collected.has(prev.id)) break;
-      collected.add(prev.id);
-      chain.push(prev);
-      node = prev;
-    }
-    return chain.sort((a, b) => a.version - b.version);
-  }
-  createSkill(input: {
-    name: string;
-    description?: string;
-    body?: string;
-    enabled?: boolean;
-    sortOrder?: number;
-    source?: "manual" | "auto";
-    projectId?: string | null;
-  }): SkillRow {
-    const id = newId("skl");
-    this.raw
-      .prepare(
-        "INSERT INTO skills (id, name, description, body, enabled, sort_order, version, status, source, superseded_by, project_id, updated_at) VALUES (?,?,?,?,?,?,1,'active',?,NULL,?,?)",
-      )
-      .run(
-        id,
-        input.name,
-        input.description ?? "",
-        input.body ?? "",
-        input.enabled ? 1 : 0,
-        input.sortOrder ?? 0,
-        input.source ?? "manual",
-        input.projectId ?? null,
-        Date.now(),
-      );
-    return this.getSkill(id)!;
-  }
-  /**
-   * 编辑技能：正文/名称/描述任一实质变化 → 生成新版本（旧行置 superseded 指向新行，
-   * 新行 version+1、继承 enabled/sortOrder/source/projectId）；仅无实质变化时原地更新元数据。
-   * 返回 { row, versioned }。
-   */
-  updateSkill(
-    id: string,
-    input: Partial<{ name: string; description: string; body: string; enabled: boolean; sortOrder: number; projectId: string | null }>,
-  ): { row: SkillRow; versioned: boolean } | undefined {
-    const e = this.getSkill(id);
-    if (!e) return undefined;
-    const m = {
-      name: input.name ?? e.name,
-      description: input.description ?? e.description,
-      body: input.body ?? e.body,
-      enabled: input.enabled ?? e.enabled,
-      sortOrder: input.sortOrder ?? e.sortOrder,
-      projectId: input.projectId !== undefined ? input.projectId : e.projectId,
-    };
-    const contentChanged = m.name !== e.name || m.description !== e.description || m.body !== e.body;
-    const now = Date.now();
-
-    // 仅元数据（enabled/sortOrder/projectId）变化：原地更新，不产生新版本
-    if (!contentChanged) {
-      this.raw
-        .prepare("UPDATE skills SET enabled = ?, sort_order = ?, project_id = ?, updated_at = ? WHERE id = ?")
-        .run(m.enabled ? 1 : 0, m.sortOrder, m.projectId, now, id);
-      return { row: this.getSkill(id)!, versioned: false };
-    }
-
-    // 内容变化：插入新版本行，旧 active 行置 superseded 指向它
-    const newId2 = newId("skl");
-    this.raw
-      .prepare(
-        "INSERT INTO skills (id, name, description, body, enabled, sort_order, version, status, source, superseded_by, project_id, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-      )
-      .run(
-        newId2,
-        m.name,
-        m.description,
-        m.body,
-        m.enabled ? 1 : 0,
-        m.sortOrder,
-        e.version + 1,
-        "active",
-        e.source,
-        null,
-        m.projectId,
-        now,
-      );
-    this.raw
-      .prepare("UPDATE skills SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ?")
-      .run(newId2, now, id);
-    return { row: this.getSkill(newId2)!, versioned: true };
-  }
-  deleteSkill(id: string): boolean {
-    return Number(this.raw.prepare("DELETE FROM skills WHERE id = ?").run(id).changes) > 0;
-  }
-
   // ── knowledge ──
   // 加载口径（DESIGN 决策 56）：project scope 知识仅当其所属项目未软删才加载（JOIN projects）；
   // global 知识恒可加载。项目恢复后 JOIN 自然命中，无需额外处理。
@@ -356,7 +199,6 @@ export class AssetsRepo {
   enabledAssetLists(projectId: string | null): {
     knowledge: AssetListItem[];
     agents: AssetListItem[];
-    skills: AssetListItem[];
   } {
     const knowledge = (
       this.raw
@@ -372,9 +214,6 @@ export class AssetsRepo {
     const agents = (
       this.raw.prepare("SELECT id, name, description FROM agents WHERE enabled = 1 ORDER BY sort_order ASC, rowid ASC").all() as Record<string, unknown>[]
     ).map((r) => ({ id: r.id as string, title: r.name as string, description: r.description as string }));
-    const skills = (
-      this.raw.prepare("SELECT id, name, description FROM skills WHERE enabled = 1 AND status = 'active' ORDER BY sort_order ASC, rowid ASC").all() as Record<string, unknown>[]
-    ).map((r) => ({ id: r.id as string, title: r.name as string, description: r.description as string }));
-    return { knowledge, agents, skills };
+    return { knowledge, agents };
   }
 }

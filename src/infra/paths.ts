@@ -33,15 +33,6 @@ export function dbFilePath(): string {
   return path.join(dataDir(), "gateway.db");
 }
 
-/**
- * CodeGraph 索引存储根（vendored @colbymchenry/codegraph 的 CODEGRAPH_STORE_ROOT）。
- * 每个被索引项目的图谱落到 {DATA_DIR}/codegraph/{basename}-{hash}/codegraph.db，
- * 与被扫描项目目录彻底隔离（避免污染目标仓库 + Windows watcher EBUSY）。
- */
-export function codegraphStoreDir(): string {
-  return path.join(dataDir(), "codegraph");
-}
-
 /** 日志根目录（{DATA_DIR}/Logs，其下按 yyyy/MM/dd/HH.txt 分小时存放）。 */
 export function logsDir(): string {
   return path.join(dataDir(), "Logs");

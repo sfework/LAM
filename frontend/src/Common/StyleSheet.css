@@ -252,30 +252,6 @@ html,
     opacity: 1;
 }
 
-/* CodeGraph 页：关系图画布（撑满剩余高度，SVG 自适应） */
-.cgCanvas {
-    position: relative;
-    flex: 1;
-    width: 100%;
-    min-height: 0;
-    border: 1px solid var(--semi-color-border);
-    border-radius: 4px;
-    background: var(--semi-color-bg-0);
-    overflow: hidden;
-    margin-top: 10px;
-}
-
-.cgCanvas .cgHint {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    color: var(--semi-color-text-2);
-    font-size: 13px;
-    white-space: pre-wrap;
-    text-align: center;
-}
-
 .table_list button {
     background-color: rgb(62 63 67) !important;
     background: rgb(62 63 67) !important;

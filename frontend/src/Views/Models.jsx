@@ -23,10 +23,11 @@ function getTableColumns(view) {
         {
             title: '操作', dataIndex: 'operate', width: 168,
             render: (text, item) => {
-                // 被设置引用的模型：禁编辑/禁删除（后端也会 400 兜底）。
+                // 决策 77：被引用模型**可编辑**（下一调用即生效）；仅禁删除（防悬挂引用）。
+                // 分类改动在编辑弹窗内禁用（后端也 400 兜底）。
                 const used = !!item.inUse;
                 return <ButtonGroup>
-                    <Button disabled={used} onClick={view.edit(item)}>编辑</Button>
+                    <Button onClick={view.edit(item)}>编辑</Button>
                     <DeleteConfirm disabled={used} onClick={() => view.delete(item.id)}>
                         <Button type="danger" disabled={used}>删除</Button>
                     </DeleteConfirm>
@@ -86,20 +87,30 @@ class EditModal extends UIFormModal {
     set = (data, callback) => { this.data = { ...(data || {}) }; this.callback = callback; return this; };
     onSubmit = async (values) => {
         const isCreate = !this.data.id;
+        // 使用中的嵌入模型改 url/模型名 → 全量重嵌入提示（约一两个 tick 重建，期间向量检索降级）
+        const embRebuild = !isCreate && this.data.inUse && this.data.category === 'embedding'
+            && (values.url !== this.data.url || values.model !== this.data.model);
+        if (embRebuild && !window.confirm('该嵌入模型正被引用，变更地址/模型名会使全部存量向量失效并自动重嵌入（期间向量检索降级为关键词召回）。确认保存？')) {
+            return;
+        }
         const result = isCreate
             ? await Net.api.models.create(values)
             : await Net.api.models.update({ id: this.data.id, ...values });
         if (result.success) {
-            ToastUI.success('保存成功！');
+            ToastUI.success(embRebuild ? '保存成功，向量重建已触发' : '保存成功！');
             this.callback();
             this.hide();
         }
     };
     children() {
+        // 编辑时分类恒禁用（决策 77 收紧）：改类等于换模型，应走"新建 + 重绑"；后端同步 400 兜底。
+        const lockCategory = !!this.data.id;
         return <>
             <Row gutter={16}>
                 <Col span={12}>
                     <Form.Select field='category' label='分类' style={{ width: '100%' }} optionList={categoryOptions}
+                        disabled={lockCategory}
+                        extraText={lockCategory ? '编辑不可修改分类，如需换分类请新建模型' : undefined}
                         rules={{ required: true, message: '请选择分类' }} />
                 </Col>
                 <Col span={12}>
