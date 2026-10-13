@@ -48,7 +48,7 @@ function fresh(vecOn = true) {
   return { raw, settings, models, store, projectId: project.id, vecAvailable };
 }
 
-const mk = (content: string, kind: "fact" | "persona" = "fact", priority = 80) => ({
+const mk = (content: string, kind: "fact" | "persona" | "episodic" = "fact", priority = 80) => ({
   kind,
   content,
   priority,
@@ -266,7 +266,7 @@ describe("MemoryRecaller", () => {
   it("多条 user 消息拼接检索：短追问靠上文命中", async () => {
     const ctx = fresh(false);
     // 记忆主题词只出现在上文（第一轮），本轮是省略主语的短追问
-    ctx.store.insert(ctx.projectId, mk("CodeGraph 索引必须外置于 DATA_DIR 目录"), "fact", 90);
+    ctx.store.insert(ctx.projectId, mk("CodeGraph 索引必须外置于 DATA_DIR 目录", "fact", 90));
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
     // 仅本轮短词：召回不到
     expect((await recaller.recall(ctx.projectId, ["那方案呢"])).count).toBe(0);
@@ -281,5 +281,75 @@ describe("MemoryRecaller", () => {
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
     const { count } = await recaller.recall(ctx.projectId, ["pnpm 依赖怎么管理", "好的"]);
     expect(count).toBe(0);
+  });
+
+  it("召回缓存：同项目同检索词第二次命中缓存（cached=true，不重复检索）", async () => {
+    const ctx = fresh(false);
+    ctx.store.insert(ctx.projectId, mk("用户偏好使用 pnpm 管理依赖", "persona", 90));
+    let embedCalls = 0;
+    const recaller = new MemoryRecaller(ctx.store, ctx.settings, async () => {
+      embedCalls++;
+      return new Float32Array(EMBEDDING_DIM);
+    });
+    const r1 = await recaller.recall(ctx.projectId, ["依赖管理用什么工具"]);
+    expect(r1.count).toBe(1);
+    expect(r1.cached).toBeUndefined();
+    const r2 = await recaller.recall(ctx.projectId, ["依赖管理用什么工具"]);
+    expect(r2.cached).toBe(true);
+    expect(r2.block).toBe(r1.block); // 字节级一致（利上游 KV cache）
+    // 不同检索词不命中缓存
+    const r3 = await recaller.recall(ctx.projectId, ["另一个完全不同的问题 abc"]);
+    expect(r3.cached).toBeUndefined();
+  });
+
+  it("审计字段：items 携带 score 与 source", async () => {
+    const ctx = fresh(false);
+    ctx.store.insert(ctx.projectId, mk("用户偏好使用 pnpm 管理依赖", "persona", 90));
+    const recaller = new MemoryRecaller(ctx.store, ctx.settings);
+    const { items } = await recaller.recall(ctx.projectId, ["pnpm 依赖管理"]);
+    expect(items.length).toBeGreaterThan(0);
+    expect(items[0]).toMatchObject({ kind: "persona", source: "bm25" });
+    expect(typeof items[0]!.score).toBe("number");
+  });
+});
+
+describe.skipIf(!VEC_OK)("召回软重排（决策 78）", () => {
+  const unit = (dims: number[]) => {
+    const v = new Float32Array(EMBEDDING_DIM);
+    dims.forEach((d, i) => (v[i] = d));
+    return v;
+  };
+
+  it("searchHybrid 标注 source：双源=both / 仅向量=vec / 仅词面=bm25", () => {
+    const ctx = fresh(true);
+    if (!ctx.vecAvailable) return;
+    const both = ctx.store.insert(ctx.projectId, mk("alpha beta 双源命中"));
+    const vecOnly = ctx.store.insert(ctx.projectId, mk("gamma 仅向量"));
+    ctx.store.upsertVector(both, ctx.projectId, unit([1, 0, 0]));
+    ctx.store.upsertVector(vecOnly, ctx.projectId, unit([1, 0, 0]));
+    const hits = ctx.store.searchHybrid(ctx.projectId, "alpha beta", unit([1, 0, 0]), 5);
+    const byId = new Map(hits.map((h) => [h.record.id, h.source]));
+    expect(byId.get(both)).toBe("both"); // FTS + 向量都中
+    expect(byId.get(vecOnly)).toBe("vec"); // FTS 不中 gamma
+  });
+
+  it("软重排：双源命中的 episodic 排在纯词面 episodic 之前（不硬删）", async () => {
+    const ctx = fresh(true);
+    if (!ctx.vecAvailable) return;
+    const em = ctx.models.create({ category: "embedding", name: "e", url: "http://fake", key: "", model: "em" });
+    ctx.settings.set("embedding_model", em.id);
+    // 两条 episodic 都含词面"部署"，但只有前者有向量确认
+    const strong = ctx.store.insert(ctx.projectId, mk("用户于上周完成部署流程改造", "episodic", 90));
+    const weak = ctx.store.insert(ctx.projectId, mk("用户提到过部署这个词", "episodic", 90));
+    ctx.store.upsertVector(strong, ctx.projectId, unit([1, 0, 0]));
+    ctx.store.upsertVector(weak, ctx.projectId, unit([0, 0, 1])); // 与查询向量远
+    const recaller = new MemoryRecaller(ctx.store, ctx.settings, async (_cfg, text) =>
+      text.includes("部署") ? unit([1, 0, 0]) : unit([0, 1, 0]),
+    );
+    const { items } = await recaller.recall(ctx.projectId, ["部署流程现在什么样"]);
+    expect(items.length).toBe(2); // 软重排不减候选
+    expect(items[0]!.id).toBe(strong); // 双源确认者居前
+    expect(items[0]!.source).toBe("both");
+    expect(items[1]!.source).toBe("bm25");
   });
 });

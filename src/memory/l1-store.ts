@@ -272,6 +272,9 @@ export class L1Store {
    * BM25 不设绝对阈值：bigram + 小文档集下 -bm25 分数不可靠（IDF 趋 0 虚低），
    * 绝对阈值会造成假阴性；低信息量输入由召回侧停用词短路拦截。
    * 传 0（默认）表示不过滤，由调用方（召回侧）读取设置传入。
+   *
+   * 返回附 source（bm25/vec/both）供审计与召回侧重排（决策 78：本层只产候选，
+   * 排序策略在 MemoryRecaller，不在存储层做硬性排除）。
    */
   searchHybrid(
     projectId: string,
@@ -279,25 +282,36 @@ export class L1Store {
     queryVec: Float32Array | null,
     limit: number,
     simMin = 0,
-  ): { record: L1Record; score: number }[] {
+  ): { record: L1Record; score: number; source: "bm25" | "vec" | "both" }[] {
     const fetch = Math.max(limit * 2, 10);
     const ftsHits = this.search(projectId, query, fetch);
-    if (!queryVec || !this.vecAvailable) return ftsHits.slice(0, limit);
+    if (!queryVec || !this.vecAvailable) {
+      return ftsHits.slice(0, limit).map((h) => ({ record: h.record, score: h.score, source: "bm25" as const }));
+    }
 
     const vecHits = this.searchVector(projectId, queryVec, fetch);
     // 向量命中的 id → record（get 过滤软删/superseded），并按余弦相似度阈值过滤
     const vecRecords: { record: L1Record; rank: number }[] = [];
+    const vecIds = new Set<string>();
     for (const h of vecHits) {
       if (1 - h.distance < simMin) continue;
       const rec = this.get(h.id);
-      if (rec && rec.supersededBy === null && rec.deletedAt === null) vecRecords.push({ record: rec, rank: vecRecords.length });
+      if (rec && rec.supersededBy === null && rec.deletedAt === null) {
+        vecRecords.push({ record: rec, rank: vecRecords.length });
+        vecIds.add(rec.id);
+      }
     }
 
+    const ftsIds = new Set(ftsHits.map((h) => h.record.id));
     return rrfMerge(
       [ftsHits.map((h) => h.record), vecRecords.map((v) => v.record)],
       (r) => r.id,
     )
       .slice(0, limit)
-      .map((x) => ({ record: x.item, score: x.rrfScore }));
+      .map((x) => ({
+        record: x.item,
+        score: x.rrfScore,
+        source: ftsIds.has(x.item.id) && vecIds.has(x.item.id) ? ("both" as const) : vecIds.has(x.item.id) ? ("vec" as const) : ("bm25" as const),
+      }));
   }
 }

@@ -36,8 +36,10 @@ export function cleanQueryText(content: unknown): string {
 export interface RecallOutcome {
   block: string;
   count: number;
-  /** 命中记忆清单（日志/审计用）：id/类型/正文。 */
-  items: { id: string; kind: string; content: string }[];
+  /** 命中记忆清单（日志/审计用）：id/类型/正文/相关度分/命中来源。 */
+  items: { id: string; kind: string; content: string; score: number; source: "bm25" | "vec" | "both" }[];
+  /** 本结果是否来自缓存（同项目同检索词在 TTL 内重复请求，如 tool-call 循环）。 */
+  cached?: boolean;
 }
 
 const DISCLAIMER = "以下是与本轮用户问题相关的项目记忆（按相关度排序），仅用于辅助回答当前这一轮，不要视为永久系统规则：";
@@ -46,6 +48,13 @@ export class MemoryRecaller {
   private readonly store: L1Store;
   private readonly settings: SettingsService;
   private readonly embed: EmbedFn;
+  /**
+   * 召回缓存（决策 78）：key = projectId + 检索词 hash。
+   * 客户端 tool-call 循环每轮全量重发历史，最后一条 user 不变 → 检索词逐字节相同；
+   * 缓存让 N 轮只算 1 次（省 embedding 调用与检索），且注入块跨请求字节一致（利上游 KV cache）。
+   * TTL 对齐 session_ttl_minutes；空结果也缓存（防寒暄后连续空转重算）。
+   */
+  private readonly cache = new Map<string, { at: number; outcome: RecallOutcome }>();
 
   constructor(store: L1Store, settings: SettingsService, embed: EmbedFn = embedText) {
     this.store = store;
@@ -70,6 +79,16 @@ export class MemoryRecaller {
     if (!hasMeaningfulQuery(current)) return empty;
     const query = cleaned.join("\n").slice(0, 2048);
 
+    // 缓存命中（决策 78）：同项目同检索词在 TTL 内直接复用——tool-call 循环每轮
+    // 全量重发历史但最后一条 user 不变，检索词逐字节相同；复用省 embedding 调用，
+    // 且注入块跨请求字节一致（利上游 KV cache）。
+    const cacheKey = `${projectId}\u0000${fnv1a(query)}`;
+    const ttlMs = this.settings.getInt("session_ttl_minutes") * 60_000;
+    const hit = this.cache.get(cacheKey);
+    if (hit && Date.now() - hit.at < ttlMs) {
+      return { ...hit.outcome, cached: true };
+    }
+
     const timeoutMs = this.settings.getInt("recall_timeout_ms");
     const topK = this.settings.getInt("l1_recall_top_k");
 
@@ -78,16 +97,29 @@ export class MemoryRecaller {
         this.searchAsync(projectId, query, topK),
         timeoutMs,
       );
-      if (!hits.length) return empty;
-      return {
-        block: renderBlock(
-          hits,
-          this.settings.getInt("l1_recall_max_chars"),
-          this.settings.getInt("l1_recall_max_chars_per_item"),
-        ),
-        count: hits.length,
-        items: hits.map((h) => ({ id: h.record.id, kind: h.record.kind, content: h.record.content })),
-      };
+      // 软重排（决策 78）：双源一致加分、纯词面命中降权、kind 权重——
+      // 只调排序不减候选，episodic 真相关（双源命中）仍能进 top。
+      const reranked = rerank(hits).slice(0, topK);
+      const outcome: RecallOutcome = reranked.length
+        ? {
+            block: renderBlock(
+              reranked,
+              this.settings.getInt("l1_recall_max_chars"),
+              this.settings.getInt("l1_recall_max_chars_per_item"),
+            ),
+            count: reranked.length,
+            items: reranked.map((h) => ({
+              id: h.record.id,
+              kind: h.record.kind,
+              content: h.record.content,
+              score: Number(h.score.toFixed(4)),
+              source: h.source,
+            })),
+          }
+        : empty;
+      this.pruneCache();
+      this.cache.set(cacheKey, { at: Date.now(), outcome });
+      return outcome;
     } catch (err) {
       log.warn({ projectId, err: String(err) }, "召回超时/失败，降级为空召回");
       return empty;
@@ -125,11 +157,55 @@ export class MemoryRecaller {
     const m = this.settings.getResolvedModel("embedding_model");
     return m ? { baseUrl: m.url, apiKey: m.key, model: m.model } : null;
   }
+
+  /** 缓存清理：条目超上限时淘汰最旧的一半（防长时运行内存无界增长）。 */
+  private pruneCache(): void {
+    const MAX = 512;
+    if (this.cache.size < MAX) return;
+    const entries = [...this.cache.entries()].sort((a, b) => a[1].at - b[1].at);
+    for (const [k] of entries.slice(0, Math.floor(MAX / 2))) this.cache.delete(k);
+  }
 }
 
 /** 截断标记与"部分塞入"的最小可用长度（低于此宁可整条丢弃，避免塞入无意义碎片）。 */
 const TRUNCATION_SUFFIX = "…";
 const MIN_PARTIAL_LINE_CHARS = 40;
+
+/** FNV-1a 32 位哈希（检索词 → 缓存 key，无需密码学强度）。 */
+function fnv1a(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
+/**
+ * 召回软重排（决策 78）：在 RRF 融合分基础上做**乘性微调**，只改排序不减候选。
+ *
+ * 依据真实日志诊断（11344 轮）：episodic 一次性事件因 bigram 词面巧合被高频误召回
+ * （单条 Login 修复记录跨话题召回 2445 次），而 fact/method 类误召回少。三个信号：
+ *  - **双源一致**（source=both）：BM25 与向量都命中 → ×1.15 加分（最强相关证据）；
+ *  - **纯词面**（source=bm25）：仅 BM25 命中、向量未确认 → ×0.8 降权（词面巧合高发区）；
+ *  - **kind 权重**：episodic（易过时的一次性事件）×0.85，其余 ×1.0。
+ * 真相关的 episodic 通常双源命中（×1.15 抵消 ×0.85 仍居前），弱相关的被压到 top-K 之外——
+ * 不硬删，保留"强命中仍可召回"的能力，避免误杀。向量不可用时 source 恒为 bm25，
+ * 降权对全部候选一致，相对序不变（等价于只按 kind 微调），安全降级。
+ */
+function rerank<T extends { record: { kind: string }; score: number; source: "bm25" | "vec" | "both" }>(
+  hits: T[],
+): (T & { score: number })[] {
+  return hits
+    .map((h) => {
+      let m = 1;
+      if (h.source === "both") m *= 1.15;
+      else if (h.source === "bm25") m *= 0.8;
+      if (h.record.kind === "episodic") m *= 0.85;
+      return { ...h, score: h.score * m };
+    })
+    .sort((a, b) => b.score - a.score);
+}
 
 /** 按 code point 截断（非 UTF-16 单元），避免把代理对截半产生 U+FFFD。 */
 function truncateLine(line: string, maxChars: number): string {

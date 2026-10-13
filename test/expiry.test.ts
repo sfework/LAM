@@ -92,7 +92,7 @@ describe("MemoryExpirer", () => {
     // 锚点已写入 metadata
     expect(JSON.parse(ctx.store.get(id)!.metadata).expiry_kept_at).toBeTypeOf("number");
     // 第二轮：锚点续期后未再超龄，不进候选
-    const r2 = await ex.sweepOneProject(ctx.projectId, async () => "[]");
+    const r2 = await ex.sweepOneProject(ctx.projectId, FAKE_LLM);
     expect(r2.scanned).toBe(0);
   });
 
