@@ -46,9 +46,10 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
       return openaiError(c, 400, "invalid_request", "请求体需含 messages 数组");
     }
 
-    // 1. 项目登记（header 优先，正文兜底）
+    // 1. 项目登记（header 优先，正文兜底）。解析不到不再拒绝请求：
+    // Copilot /compact 等元请求的 system 无工作区信息，400 会导致客户端报
+    // "Summarization request failed"。此时降级为透传代理（见 3.5）。
     const project = resolveProject(deps, c, body);
-    if (project.error) return openaiError(c, 400, "invalid_request", project.error);
 
     // 2. 解析协议
     const parsed = chatCompletionsAdapter.parse(body);
@@ -56,27 +57,35 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
     // 3. 除噪（转发通道）
     const denoised = denoiseMessages(parsed.messages, deps.denoise.list(), "forward") as ChatMessage[];
 
-    // 4. 会话判定 + 快照（服务端存储，每轮复用）
-    const { snapshot, sessionKey } = resolveSnapshot(deps, project.projectId, project.path, denoised, c.req.header("x-session-id"));
+    // 3.5 降级通道：无项目归属（路径解析失败/登记失败）→ 跳过快照、召回、L0 回流，仅除噪后透传
+    let finalMessages: ChatMessage[] = denoised;
+    let sessionKey = "";
+    if (!project.projectId) {
+      log.info({ roles: parsed.messages.map((m) => m.role).join(",") }, "降级透传：无法确定项目，跳过快照/召回/回流");
+    } else {
+      // 4. 会话判定 + 快照（服务端存储，每轮复用）
+      const { snapshot, sessionKey: sid } = resolveSnapshot(deps, project.projectId, project.path, denoised, c.req.header("x-session-id"));
+      sessionKey = sid;
 
-    // 5. 注入快照到 system（方案 A）
-    const withSnapshot = injectSnapshot(denoised, snapshot);
+      // 5. 注入快照到 system（方案 A）
+      const withSnapshot = injectSnapshot(denoised, snapshot);
 
-    // 5.5 每轮 L1 动态召回 → 拼到最后一条 user 之前（超时/失败降级空召回，不阻塞）
-    // 检索词 = 最近 N 条 user 消息（N 热更可调，assistant 不参与防复述污染），提升短追问的召回准确率。
-    const userMsgs = denoised.filter((m) => m.role === "user");
-    const recallTurns = deps.settings.getInt("l1_recall_query_turns");
-    const recentUsers = userMsgs.slice(-Math.max(1, recallTurns));
-    const lastUser = userMsgs[userMsgs.length - 1];
-    let finalMessages = withSnapshot;
-    if (project.projectId && lastUser && recentUsers.length) {
-      const { block, items } = await deps.recaller.recall(project.projectId, recentUsers.map((m) => m.content));
-      if (block) finalMessages = prependRecall(withSnapshot, block);
-      if (items.length) {
-        log.info(
-          { projectId: project.projectId, path: project.path, userMessage: lastUser.content, recalled: items },
-          "L1 召回：注入命中记忆",
-        );
+      // 5.5 每轮 L1 动态召回 → 拼到最后一条 user 之前（超时/失败降级空召回，不阻塞）
+      // 检索词 = 最近 N 条 user 消息（N 热更可调，assistant 不参与防复述污染），提升短追问的召回准确率。
+      const userMsgs = denoised.filter((m) => m.role === "user");
+      const recallTurns = deps.settings.getInt("l1_recall_query_turns");
+      const recentUsers = userMsgs.slice(-Math.max(1, recallTurns));
+      const lastUser = userMsgs[userMsgs.length - 1];
+      finalMessages = withSnapshot;
+      if (lastUser && recentUsers.length) {
+        const { block, items } = await deps.recaller.recall(project.projectId, recentUsers.map((m) => m.content));
+        if (block) finalMessages = prependRecall(withSnapshot, block);
+        if (items.length) {
+          log.info(
+            { projectId: project.projectId, path: project.path, userMessage: lastUser.content, recalled: items },
+            "L1 召回：注入命中记忆",
+          );
+        }
       }
     }
 
@@ -110,10 +119,11 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
         );
         // final answer → L0 回流（始终写 L0 + 累积调度器状态；
         // extraction_enabled 在阶段 6 调度器决定是否真正提取）
-        if (agg.final) {
+        // 降级通道（无项目归属）不回流的 L0：无法按项目隔离，且多为 compact 等元请求
+        if (agg.final && project.projectId) {
           // 用原始请求消息（未除噪）：recorder 内部按 memory 通道除噪 + 游标对齐
           deps.l0.recordTurn({
-            projectId: project.projectId!,
+            projectId: project.projectId,
             sessionKey,
             requestMessages: parsed.messages,
             aggregate: agg,
@@ -137,22 +147,26 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
   return gw;
 }
 
+/**
+ * 项目识别（header 优先，正文兜底）。失败返回 projectId:null，由调用方降级为透传代理，
+ * 不再中断请求（compact 等元请求无工作区信息，属预期场景）。
+ */
 function resolveProject(
   deps: GatewayDeps,
   c: Context,
   body: Record<string, unknown>,
-): { projectId: string | null; path: string; error?: string } {
+): { projectId: string | null; path: string } {
   let rawPath = c.req.header("x-project-path") ?? null;
   if (!rawPath || !normalizeProjectPath(rawPath)) rawPath = parseWorkspacePath(body);
   if (!rawPath || !normalizeProjectPath(rawPath)) {
     // 诊断日志：记录消息角色、指令消息开头、正文中所有含盘符的行与首条 user 片段，
     // 便于适配新客户端的提示词格式（一次复现即可定位路径实际所在位置/写法）。
     const msgs = Array.isArray(body.messages) ? (body.messages as ChatMessage[]) : [];
-    const textOf = (m: ChatMessage): string =>
-      typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "").slice(0, 4000);
+    const textOf = (content: unknown): string =>
+      typeof content === "string" ? content : JSON.stringify(content ?? "").slice(0, 4000);
     const pathLines: string[] = [];
     for (const m of msgs) {
-      for (const line of textOf(m).split(/\r?\n/)) {
+      for (const line of textOf(m.content).split(/\r?\n/)) {
         if (/[a-zA-Z]:[\\/]/.test(line)) {
           pathLines.push(`[${m.role}] ${line.trim().slice(0, 160)}`);
           if (pathLines.length >= 15) break;
@@ -167,18 +181,19 @@ function resolveProject(
           .filter((m) => m.role === "system" || m.role === "developer")
           .map((m) => (typeof m.content === "string" ? m.content.slice(0, 400) : "[blocks]")),
         pathLines,
-        firstUser: textOf(msgs.find((m) => m.role === "user") ?? {}).slice(0, 300),
+        firstUser: textOf(msgs.find((m) => m.role === "user")?.content ?? "").slice(0, 300),
       },
       "项目路径解析失败：请求正文快照",
     );
-    return { projectId: null, path: "", error: "无法确定项目路径（缺 x-project-path 且正文无法解析）" };
+    return { projectId: null, path: "" };
   }
   try {
     const { project, revived } = deps.projects.upsertOnRequest(rawPath);
     if (revived) log.debug({ projectId: project.id, path: project.path }, "已删除项目被再次请求，级联恢复");
     return { projectId: project.id, path: project.path };
   } catch (err) {
-    return { projectId: null, path: "", error: `项目登记失败: ${String(err)}` };
+    log.warn({ err: String(err), rawPath }, "项目登记失败：降级透传");
+    return { projectId: null, path: "" };
   }
 }
 

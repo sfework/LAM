@@ -229,11 +229,22 @@ describe("gateway e2e", () => {
     expect(lastUser.content).toContain("我该怎么装依赖 pnpm");
   });
 
-  it("缺项目路径 → 400", async () => {
-    const { app } = makeApp();
+  it("缺项目路径 → 降级透传（不注入快照、不回流）", async () => {
+    const { app, models, settings, raw } = makeApp();
+    const m = models.create({ category: "llm", name: "mock", url: `http://localhost:${upstreamPort}`, key: "", model: "rm" });
+    settings.set("gateway_llm", m.id);
+    settings.set("l1_recall_enabled", "false");
+
     const res = await postChat(app, { model: "x", messages: [{ role: "user", content: "hi" }] });
-    expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("invalid_request");
+    expect(res.status).toBe(200);
+    await res.text();
+    // 上游收到原始消息（无快照注入）
+    const msgs = lastUpstreamBody.messages as { role: string; content: string }[];
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]!.content).toBe("hi");
+    // 不落 L0 记录
+    const n = raw.prepare("SELECT COUNT(*) AS c FROM mem_l0").get() as { c: number };
+    expect(n.c).toBe(0);
   });
 
   it("final answer 经网关后 L0 回流落库", async () => {
