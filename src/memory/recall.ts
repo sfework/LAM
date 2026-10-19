@@ -94,12 +94,16 @@ export class MemoryRecaller {
 
     try {
       const hits = await withTimeout(
-        this.searchAsync(projectId, query, topK),
+        this.searchAsync(projectId, query, topK * 2),
         timeoutMs,
       );
+      // 决策 79：instruction 类（对 AI 工具的通用操作指令）退出每轮语义召回——
+      // 其恒定适用的偏好由 L2 画像/快照常驻承载，参与召回只会抢占 episodic/method/fact 槽位。
+      // 仅注入通道过滤；MCP memory_search（search()）显式检索仍可命中。
+      const taskHits = hits.filter((h) => h.record.kind !== "instruction");
       // 软重排（决策 78）：双源一致加分、纯词面命中降权、kind 权重——
       // 只调排序不减候选，episodic 真相关（双源命中）仍能进 top。
-      const reranked = rerank(hits).slice(0, topK);
+      const reranked = applyBm25Floor(rerank(taskHits), topK).slice(0, topK);
       const outcome: RecallOutcome = reranked.length
         ? {
             block: renderBlock(
@@ -205,6 +209,26 @@ function rerank<T extends { record: { kind: string }; score: number; source: "bm
       return { ...h, score: h.score * m };
     })
     .sort((a, b) => b.score - a.score);
+}
+
+/**
+ * 纯 BM25 单源相对门槛（决策 79）：治"常驻污染条目"——高频词命中的 bm25 条目
+ * 常年挤在 top 尾部（实测单条跨 43 次召回出现 32 次），与当轮任务无关。
+ * 规则：候选中存在双源/向量确认的命中时，纯 bm25 条目重排分 < 榜首 × BM25_FLOOR_RATIO
+ * 即丢弃；榜首本身是纯 bm25（无向量确认，如向量不可用降级）时不启用，避免误杀。
+ * 小文档集豁免：候选总数 ≤ topK 时不过滤（小库下槽位本就不紧张，宁多勿漏）。
+ */
+const BM25_FLOOR_RATIO = 0.4;
+
+function applyBm25Floor<T extends { score: number; source: "bm25" | "vec" | "both" }>(
+  ranked: T[],
+  topK: number,
+): T[] {
+  if (ranked.length <= topK) return ranked;
+  const best = ranked[0];
+  if (!best || best.source === "bm25") return ranked;
+  const floor = best.score * BM25_FLOOR_RATIO;
+  return ranked.filter((h) => h.source !== "bm25" || h.score >= floor);
 }
 
 /** 按 code point 截断（非 UTF-16 单元），避免把代理对截半产生 U+FFFD。 */

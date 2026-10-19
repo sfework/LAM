@@ -86,19 +86,120 @@ function sqlToolDefs(): ToolDef[] {
 export const TOOL_DEFS: ToolDef[] = [
   {
     name: "knowledge_read",
-    description: "按 id 读取知识库条目的完整正文。",
-    inputSchema: { type: "object", properties: { id: { type: "string", description: "知识条目 id（来自系统提示 <knowledge> 段的 id）" } }, required: ["id"], additionalProperties: false },
+    description: "按 id 读取知识库条目的完整正文。project 级条目只能读本项目的，global 不限。",
+    inputSchema: { type: "object", properties: { id: { type: "string", description: "知识条目 id（来自系统提示 <knowledge> 段的 id）" }, project_path: PROJECT_PATH_PROP }, required: ["id", "project_path"], additionalProperties: false },
     endpoint: "/internal/knowledge/read",
   },
   {
     name: "agent_read",
     description: "按 id 读取 Agent 的完整正文（子智能体定义）。",
-    inputSchema: { type: "object", properties: { id: { type: "string", description: "Agent id（来自系统提示 <agents> 段的 id）" } }, required: ["id"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { id: { type: "string", description: "Agent id（来自系统提示 <agents> 段的 id）" }, project_path: PROJECT_PATH_PROP }, required: ["id", "project_path"], additionalProperties: false },
     endpoint: "/internal/agents/read",
   },
   {
+    name: "knowledge_update",
+    description:
+      "按 id 部分更新知识库条目（title/description/body 至少传一个非空；正文建议先 knowledge_read 取原文再编辑）。生效开关/排序/归属范围仅管理台可改。project 级条目只能改本项目的，global 条目不限。不计入检索限流。【使用红线】写操作：除非用户明确要求修改知识库，否则禁止自行调用。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "知识条目 id（来自系统提示 <knowledge> 段的 id）。" },
+        title: { type: "string", description: "新标题（可选，非空才生效）。" },
+        description: { type: "string", description: "新描述（可选，非空才生效）。" },
+        body: { type: "string", description: "新正文全文（可选，非空才生效；覆盖原正文）。" },
+        project_path: PROJECT_PATH_PROP,
+      },
+      required: ["id", "project_path"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/knowledge/update",
+  },
+  {
+    name: "knowledge_create",
+    description:
+      "创建知识库条目（title/body 必填，description 可选；scope 缺省 project 挂当前项目，可显式 global；enabled 恒为生效，启停归管理台）。不计入检索限流。【使用红线】写操作：除非用户明确要求新增知识库条目，否则禁止自行调用。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_path: PROJECT_PATH_PROP,
+        title: { type: "string", description: "条目标题。" },
+        description: { type: "string", description: "一句话描述（注入清单时展示，建议 ≤120 字符）。" },
+        body: { type: "string", description: "条目正文全文。" },
+        scope: { type: "string", enum: ["project", "global"], description: "缺省 project（挂当前项目）；global 挂全局，所有项目可见。" },
+      },
+      required: ["project_path", "title", "body"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/knowledge/create",
+  },
+  {
+    name: "knowledge_delete",
+    description:
+      "按 id 物理删除知识库条目（不可恢复）。project 级条目只能删本项目的；global 条目可删但会记 WARN 审计日志。不计入检索限流。【使用红线】写操作：除非用户明确要求删除知识库条目，否则禁止自行调用。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_path: PROJECT_PATH_PROP,
+        id: { type: "string", description: "知识条目 id（来自系统提示 <knowledge> 段的 id）。" },
+      },
+      required: ["project_path", "id"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/knowledge/delete",
+  },
+  {
+    name: "agent_update",
+    description:
+      "按 id 部分更新 Agent 定义（name/description/body 至少传一个非空；正文建议先 agent_read 取原文再编辑）。生效开关/排序仅管理台可改。不计入检索限流。【使用红线】写操作：除非用户明确要求修改 Agent 定义，否则禁止自行调用。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Agent id（来自系统提示 <agents> 段的 id）。" },
+        name: { type: "string", description: "新名称（可选，非空才生效）。" },
+        description: { type: "string", description: "新描述（可选，非空才生效）。" },
+        body: { type: "string", description: "新定义全文（可选，非空才生效；覆盖原正文）。" },
+        project_path: PROJECT_PATH_PROP,
+      },
+      required: ["id", "project_path"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/agents/update",
+  },
+  {
+    name: "agent_create",
+    description:
+      "创建 Agent 定义（name/body 必填，description 可选；enabled 恒为生效，启停/排序归管理台）。不计入检索限流。【使用红线】写操作：除非用户明确要求新增 Agent，否则禁止自行调用。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_path: PROJECT_PATH_PROP,
+        name: { type: "string", description: "Agent 名称。" },
+        description: { type: "string", description: "一句话职责描述（注入清单时展示）。" },
+        body: { type: "string", description: "Agent 定义全文（角色/工具/流程/红线，自包含可独立执行）。" },
+      },
+      required: ["project_path", "name", "body"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/agents/create",
+  },
+  {
+    name: "agent_delete",
+    description:
+      "按 id 物理删除 Agent 定义（不可恢复；Agent 为全局资产，删除会记 WARN 审计日志）。不计入检索限流。【使用红线】写操作：除非用户明确要求删除 Agent，否则禁止自行调用。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_path: PROJECT_PATH_PROP,
+        id: { type: "string", description: "Agent id（来自系统提示 <agents> 段的 id）。" },
+      },
+      required: ["project_path", "id"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/agents/delete",
+  },
+  {
     name: "memory_search",
-    description: "检索项目结构化记忆（L1，原子事实/偏好/决策/方法）。返回 id 与内容摘要，配合 memory_read 取原文溯源。与 conversation_search 每轮合计最多调用 3 次。",
+    description: "检索项目结构化记忆（L1，原子事实/偏好/决策/方法）。返回 id 与内容摘要，配合 memory_batch_read 取原文溯源。与 conversation_search 每轮合计最多调用 3 次。",
     inputSchema: {
       type: "object",
       properties: {
@@ -113,16 +214,75 @@ export const TOOL_DEFS: ToolDef[] = [
     searchFamily: true,
   },
   {
-    name: "memory_read",
-    description: "按 id 读取一条记忆及其溯源的原始对话片段。",
-    inputSchema: { type: "object", properties: { id: { type: "string", description: "记忆 id（来自 memory_search）" } }, required: ["id"], additionalProperties: false },
-    endpoint: "/internal/memory/read",
+    name: "memory_batch_read",
+    description:
+      "分页读取当前项目的全部活跃结构化记忆（含 id/类型/正文/优先级/时间），用于记忆审计、清理与批量维护前的全量盘点。按创建时间从早到晚排列（越早的记忆越靠前，第 1 页为最老条目）；单条检索请用 memory_search。不计入检索限流。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_path: PROJECT_PATH_PROP,
+        page: { type: "number", description: "页码，从 1 开始（默认 1）。" },
+        page_size: { type: "number", description: "单页条数（默认 20，上限 100）。" },
+      },
+      required: ["project_path"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/memory/batch-read",
   },
   {
-    name: "memory_read_profile",
-    description: "读取当前项目的画像全文（技术栈/约定/偏好/经验）。",
-    inputSchema: { type: "object", properties: { project_path: PROJECT_PATH_PROP }, required: ["project_path"], additionalProperties: false },
+    name: "memory_batch_update",
+    description:
+      "批量维护（更新/删除）项目结构化记忆，用于 Agent 主动修正错述、合并改写或清理过时条目。items 单批最多 50 条；action 缺省 update（改 content），delete 为物理删除。逐条返回结果，单条失败不影响其余。不计入检索限流。【使用红线】写操作：除非用户明确要求整理/维护记忆，否则禁止自行调用。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_path: PROJECT_PATH_PROP,
+        items: {
+          type: "array",
+          description: "批量操作清单。",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "记忆 id（来自 memory_search / memory_batch_read）。" },
+              content: { type: "string", description: "新正文（update 必填，≤2000 字符）。" },
+              action: { type: "string", enum: ["update", "delete"], description: "缺省 update。" },
+            },
+            required: ["id"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["project_path", "items"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/memory/batch-update",
+  },
+  {
+    name: "memory_profile_read",
+    description:
+      "读取当前项目的 L2 画像全文（技术栈/约定/偏好/经验等稳定上下文的凝练文档，快照每轮常驻注入）。返回 content、version、updatedAt。画像工具面仅开放读/整篇覆盖写，无 create/delete：新建由凝练管线自动完成，删除/重置归管理台。不计入检索限流。",
+    inputSchema: {
+      type: "object",
+      properties: { project_path: PROJECT_PATH_PROP },
+      required: ["project_path"],
+      additionalProperties: false,
+    },
     endpoint: "/internal/memory/profile",
+  },
+  {
+    name: "memory_profile_update",
+    description:
+      "整篇覆盖保存当前项目的 L2 画像（先 memory_profile_read 取原文，在其基础上编辑后提交全量 content）。内容实质未变时不写库、version 不自增。画像为凝练文档，禁止追加拼接式提交；无删除工具，重置/清空归管理台。不计入检索限流。【使用红线】写操作：除非用户明确要求修改项目画像，否则禁止自行调用。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_path: PROJECT_PATH_PROP,
+        content: { type: "string", description: "画像全文（Markdown，非空；覆盖原画像）。" },
+      },
+      required: ["project_path", "content"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/memory/save-profile",
   },
   {
     name: "conversation_search",

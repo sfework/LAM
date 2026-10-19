@@ -29,8 +29,10 @@ export class EmbeddingBackfiller {
     return m ? { baseUrl: m.url, apiKey: m.key, model: m.model } : null;
   }
 
-  /** 处理一批缺失嵌入的 L1。返回处理条数。 */
-  async backfillProject(projectId: string, batch = 32): Promise<number> {
+  /** 处理一批缺失嵌入的 L1。返回处理条数。
+   *  batch 上限 20：阿里云 DashScope 等 embedding 上游单请求 input 不超过 20 条，
+   *  超则确定性 400（batch size is invalid）导致该项目每 tick 重试刷屏（决策 85）。 */
+  async backfillProject(projectId: string, batch = 20): Promise<number> {
     const cfg = this.config();
     if (!cfg) return 0;
     const missing = this.store.listActiveMissingEmbedding(projectId, batch);

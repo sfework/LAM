@@ -156,6 +156,26 @@ export class L1Store {
   }
 
   /**
+   * 活跃记忆分页读取（MCP memory_batch_read 用，决策 79）：按 created_at 升序，
+   * 返回本页记录与活跃总数（供翻页）。
+   */
+  listActivePaged(projectId: string, offset: number, limit: number): { items: L1Record[]; total: number } {
+    const total = Number(
+      (
+        this.raw
+          .prepare("SELECT COUNT(*) AS c FROM mem_l1 WHERE project_id = ? AND deleted_at IS NULL AND superseded_by IS NULL")
+          .get(projectId) as { c: number }
+      ).c,
+    );
+    const rows = this.raw
+      .prepare(
+        "SELECT * FROM mem_l1 WHERE project_id = ? AND deleted_at IS NULL AND superseded_by IS NULL ORDER BY created_at LIMIT ? OFFSET ?",
+      )
+      .all(projectId, limit, offset) as Record<string, unknown>[];
+    return { items: rows.map(toRecord), total };
+  }
+
+  /**
    * 管理端单条删除 = 物理删除（DESIGN 决策 56）：删 mem_l1 行 + 移出 FTS + 移出向量表。
    * （项目级联软删走 ProjectRepo，另行处理，与此不同。）
    */

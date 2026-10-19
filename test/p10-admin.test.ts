@@ -337,7 +337,7 @@ describe("/api/tools", () => {
     const nameList = (byName.body.data as { list: { name: string }[] }).list;
     expect(nameList.length).toBeGreaterThanOrEqual(4);
     expect(nameList.every((t) => t.name.includes("sql_list_tables"))).toBe(true);
-    const byDesc = await call(app, "POST", "/api/tools/list", { keyword: "画像", pageSize: 100 });
+    const byDesc = await call(app, "POST", "/api/tools/list", { keyword: "溯源", pageSize: 100 });
     expect((byDesc.body.data as { list: unknown[] }).list.length).toBeGreaterThan(0);
     const none = await call(app, "POST", "/api/tools/list", { keyword: "不存在的工具xyz", pageSize: 100 });
     expect((none.body.data as { list: unknown[] }).list).toHaveLength(0);

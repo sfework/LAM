@@ -221,7 +221,7 @@ await check("资产读取回路（/internal，MCP 工具同路径）", async () 
   assert(kn.some((x) => x.description.includes(KNO)), "知识清单缺新全局条目");
   assert(kn.some((x) => x.description.includes("本项目专属")), "project scope 知识未按项目返回");
   assert(ag.some((x) => x.description.includes(AGT)), "agents 清单缺新条目");
-  const read = await internal(`knowledge/read?id=${kn.find((x) => x.description.includes(KNO)).id}`);
+  const read = await internal(`knowledge/read?id=${kn.find((x) => x.description.includes(KNO)).id}&project_path=${encodeURIComponent(PROJECT)}`);
   assert(read.body.includes("KV cache"), "read 正文缺失");
   return `清单 kno=${kn.length} agt=${ag.length}；read 正文 OK`;
 });

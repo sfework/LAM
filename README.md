@@ -167,18 +167,20 @@ MCP Server 挂在同一端口：**`http://localhost:8790/mcp`**（Streamable HTT
 }
 ```
 
-开放 **18 个只读工具**：
+开放 **26 个工具**（检索/读取为主，记忆与资产类含维护写操作）：
 
 | 分组 | 工具 | 用途 |
 |------|------|------|
-| 知识库 | `knowledge_read` | 按 id 读正文（清单已注入系统提示 `<knowledge>` 段） |
-| Agents | `agent_read` | 按 id 读正文（清单已注入系统提示 `<agents>` 段） |
-| 记忆 | `memory_search` / `memory_read` / `memory_read_profile` | 检索 L1 / 读带溯源原文 / 读 L2 画像 |
+| 知识库 | `knowledge_read` / `knowledge_create` / `knowledge_update` / `knowledge_delete` | 按 id 读正文（清单已注入系统提示 `<knowledge>` 段）/ 建条目（缺省挂本项目，可 global）/ 部分更新内容字段 / 物理删除 |
+| Agents | `agent_read` / `agent_create` / `agent_update` / `agent_delete` | 按 id 读正文（清单已注入系统提示 `<agents>` 段）/ 新建定义 / 部分更新 / 删除 |
+| 记忆 | `memory_search` / `memory_batch_read` / `memory_batch_update` / `memory_profile_read` / `memory_profile_update` | 检索 L1 / 分页读全部活跃记忆（从早到晚）/ 批量改删（记忆维护）/ 读 L2 画像 / 整篇保存 L2 画像 |
 | 对话 | `conversation_search` | 检索 L0 原文 |
 | SQL | `sql_query_<方言>` / `sql_list_tables_<方言>` / `sql_describe_table_<方言>` | 外部业务库只读查询（方言：sqlite / postgresql / mysql / sqlserver） |
 
-注意两点：
+注意四点：
 
+- **写类工具使用红线**：记忆与资产的增/删/改工具描述均标注「除非用户明确要求，否则禁止自行调用」——写操作须经用户授权；`enabled`/排序等管理属性只归管理台；
+- **L2 画像仅开放 read/update**：无 create/delete 工具——新建由凝练管线自动完成，删除/重置归管理台；
 - `memory_search` 与 `conversation_search` 合计约 30 秒窗口内最多 3 次（防检索死循环），超限返回提示文本；
 - SQL 工具查的是**外部业务库**，连接串由调用参数直传（如 `postgres://user:pass@host:5432/db`），只允许单条 SELECT/WITH，行数有上限，失败原因以正常文本返回供模型自我修正。
 

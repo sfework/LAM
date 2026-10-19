@@ -67,12 +67,35 @@ export function createApp(deps: AppDeps): Hono {
 
   // MCP（Streamable HTTP，无状态）：与网关/管理 API 同端口，后缀 /mcp。
   // 工具调用直接走本 app 的 /internal 路由（进程内 fetch，免回环 HTTP）。
+  // 写类端点（POST）：project_path 走 query（端点统一从 query 解析项目），其余参数收在 body；
+  // GET 端点维持 query 传参。
+  const POST_ENDPOINTS = new Set([
+    "/internal/memory/batch-update",
+    "/internal/memory/save-profile",
+    "/internal/knowledge/update",
+    "/internal/knowledge/create",
+    "/internal/knowledge/delete",
+    "/internal/agents/update",
+    "/internal/agents/create",
+    "/internal/agents/delete",
+  ]);
   const caller: InternalCaller = async (endpoint, params) => {
     const url = new URL(endpoint, "http://internal.local");
+    const body: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+      if (v === undefined || v === null) continue;
+      const isComplex = typeof v === "object";
+      if (POST_ENDPOINTS.has(endpoint) && k !== "project_path") body[k] = v;
+      else url.searchParams.set(k, isComplex ? JSON.stringify(v) : String(v));
     }
-    const res = await app.fetch(new Request(url.toString(), { signal: AbortSignal.timeout(30_000) }));
+    const isPost = POST_ENDPOINTS.has(endpoint);
+    const res = await app.fetch(
+      new Request(url.toString(), {
+        method: isPost ? "POST" : "GET",
+        ...(isPost ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
+        signal: AbortSignal.timeout(30_000),
+      }),
+    );
     const json = (await res.json().catch(() => null)) as InternalResp | null;
     if (!json) return { ok: false, error: { code: "bad_gateway", message: `内部 API 无响应 (${endpoint})` } };
     return json;

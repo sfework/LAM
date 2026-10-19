@@ -182,6 +182,53 @@ describe("MemoryRecaller", () => {
     expect((await recaller.recall(ctx.projectId, ["记忆"])).count).toBe(0);
   });
 
+  it("instruction 类记忆不参与注入召回（决策 79），memory_search 通道仍可命中", async () => {
+    const ctx = fresh(false);
+    ctx.store.insert(ctx.projectId, { kind: "instruction", content: "要求使用 pnpm 管理依赖", priority: 90, sceneName: "s", sourceL0Ids: [], batchId: null, createdAt: Date.now() });
+    ctx.store.insert(ctx.projectId, mk("项目采用 pnpm workspace 管理依赖", "fact", 80));
+    const recaller = new MemoryRecaller(ctx.store, ctx.settings);
+    const { items } = await recaller.recall(ctx.projectId, ["pnpm 依赖 管理"]);
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.every((i) => i.kind !== "instruction")).toBe(true);
+    // 显式检索（MCP memory_search 走的 search()）不受排除影响
+    const hits = await recaller.search(ctx.projectId, "pnpm 依赖", 5);
+    expect(hits.some((h) => h.kind === "instruction")).toBe(true);
+  });
+
+  it.skipIf(!VEC_OK)("纯 BM25 低分尾部被门槛滤除，双源命中保留（决策 79）", async () => {
+    const ctx = fresh(true);
+    if (!ctx.vecAvailable) return;
+    const em = ctx.models.create({ category: "embedding", name: "e", url: "http://fake", key: "", model: "em" });
+    ctx.settings.set("embedding_model", em.id);
+    ctx.settings.set("l1_recall_top_k", "2");
+    // 4 条都含"记忆 条目"（FTS 全命中）；仅甲/乙建向量且与查询向量同向（vec 确认 → both）
+    const idA = ctx.store.insert(ctx.projectId, mk("记忆 条目 甲 主题", "fact", 90));
+    const idB = ctx.store.insert(ctx.projectId, mk("记忆 条目 乙 主题", "method", 85));
+    ctx.store.insert(ctx.projectId, mk("记忆 条目 丙 杂项", "fact", 60));
+    ctx.store.insert(ctx.projectId, mk("记忆 条目 丁 杂项", "fact", 55));
+    const unit = (i: number) => {
+      const v = new Float32Array(EMBEDDING_DIM);
+      v[i] = 1;
+      return v;
+    };
+    ctx.store.upsertVector(idA, ctx.projectId, unit(0));
+    ctx.store.upsertVector(idB, ctx.projectId, unit(0));
+    const recaller = new MemoryRecaller(ctx.store, ctx.settings, async () => unit(0));
+    const { items } = await recaller.recall(ctx.projectId, ["记忆 条目"]);
+    // 榜首为双源命中，bm25-only 的丙/丁分数远低于榜首×0.4 被滤除
+    expect(items.map((i) => i.id).sort()).toEqual([idA, idB].sort());
+    expect(items.every((i) => i.source !== "bm25")).toBe(true);
+  });
+
+  it("小文档集豁免：候选数 ≤ topK 时不启用 BM25 门槛（决策 79）", async () => {
+    const ctx = fresh(false);
+    // 向量不可用 → source 恒为 bm25；候选仅 1 条，低于任何"榜首×0.4"也应保留
+    ctx.store.insert(ctx.projectId, mk("唯一的 pnpm 依赖记忆", "fact", 70));
+    const recaller = new MemoryRecaller(ctx.store, ctx.settings);
+    const { items } = await recaller.recall(ctx.projectId, ["pnpm 依赖 记忆"]);
+    expect(items).toHaveLength(1);
+  });
+
   it("无命中返回空块", async () => {
     const ctx = fresh(false);
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
