@@ -158,8 +158,7 @@ export class MemoryRecaller {
 
   private embeddingConfig(): EmbeddingConfig | null {
     if (!this.store.vecEnabled) return null;
-    const m = this.settings.getResolvedModel("embedding_model");
-    return m ? { baseUrl: m.url, apiKey: m.key, model: m.model } : null;
+    return this.settings.getResolvedLlmConfig("embedding_model");
   }
 
   /** 缓存清理：条目超上限时淘汰最旧的一半（防长时运行内存无界增长）。 */

@@ -8,6 +8,7 @@ import { ModelRepo } from "../src/models/repo.js";
 import { SettingsService } from "../src/settings/service.js";
 import { ProjectRepo } from "../src/projects/repo.js";
 import { L1Store } from "../src/memory/l1-store.js";
+import type { L1Kind } from "../src/memory/prompts.js";
 import { MemoryRecaller, cleanQueryText, prependRecall } from "../src/memory/recall.js";
 import { EmbeddingBackfiller } from "../src/memory/embed-backfill.js";
 import { rrfMerge } from "../src/memory/rrf.js";
@@ -48,7 +49,7 @@ function fresh(vecOn = true) {
   return { raw, settings, models, store, projectId: project.id, vecAvailable };
 }
 
-const mk = (content: string, kind: "fact" | "persona" | "episodic" = "fact", priority = 80) => ({
+const mk = (content: string, kind: L1Kind = "fact", priority = 80) => ({
   kind,
   content,
   priority,

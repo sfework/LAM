@@ -30,6 +30,13 @@ function toProject(r: Record<string, unknown>): ProjectRow {
  */
 export class ProjectRepo {
   private readonly raw: DatabaseSync;
+  /**
+   * last_active_at 实际落库时间（性能优化）：网关每请求 upsertOnRequest，
+   * 该字段仅用于管理端列表排序，无逻辑依赖其精度 → 60s 内跳过 UPDATE，
+   * 消除 tool-call 高频循环下的重复写（WAL 写锁串行）。
+   */
+  private readonly lastActiveWriteAt = new Map<string, number>();
+  private static readonly ACTIVE_WRITE_THROTTLE_MS = 60_000;
 
   constructor(raw: DatabaseSync) {
     this.raw = raw;
@@ -87,8 +94,13 @@ export class ProjectRepo {
       return { project: this.findById(existing.id)!, revived: true };
     }
 
-    this.raw.prepare("UPDATE projects SET last_active_at = ? WHERE id = ?").run(now, existing.id);
-    return { project: this.findById(existing.id)!, revived: false };
+    // 节流刷新 last_active_at（仅管理端排序用，无逻辑依赖）；返回行内存值保持最新
+    const lastWrite = this.lastActiveWriteAt.get(existing.id) ?? 0;
+    if (now - lastWrite >= ProjectRepo.ACTIVE_WRITE_THROTTLE_MS) {
+      this.raw.prepare("UPDATE projects SET last_active_at = ? WHERE id = ?").run(now, existing.id);
+      this.lastActiveWriteAt.set(existing.id, now);
+    }
+    return { project: { ...existing, lastActiveAt: now }, revived: false };
   }
 
   /** 软删项目 + 级联软删其记忆、project 知识。 */

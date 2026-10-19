@@ -27,6 +27,12 @@ function toRule(r: Record<string, unknown>): DenoiseRuleData {
 /** 除噪规则仓储（DESIGN §2.3）。物理删除，无软删。 */
 export class DenoiseRepo {
   private readonly raw: DatabaseSync;
+  /**
+   * list() 缓存（性能优化）：网关每请求 forward/memory 两通道各调一次 list()，
+   * 规则几乎不变，无需每次全表 SELECT。本类是唯一写入口（create/update/delete
+   * 即失效重载）；消费方（denoiseMessages / 管理端路由）均只读，返回同一引用安全。
+   */
+  private listCache: DenoiseRuleData[] | null = null;
 
   constructor(raw: DatabaseSync) {
     this.raw = raw;
@@ -34,10 +40,12 @@ export class DenoiseRepo {
 
   /** 全部规则（createdAt 升序，应用顺序即此序；同毫秒用 rowid 稳定兜底）。 */
   list(): DenoiseRuleData[] {
+    if (this.listCache) return this.listCache;
     const rows = this.raw
       .prepare("SELECT * FROM denoise_rules ORDER BY created_at ASC, rowid ASC")
       .all() as Record<string, unknown>[];
-    return rows.map(toRule);
+    this.listCache = rows.map(toRule);
+    return this.listCache;
   }
 
   get(id: string): DenoiseRuleData | undefined {
@@ -48,6 +56,7 @@ export class DenoiseRepo {
   }
 
   create(input: DenoiseRuleInput): DenoiseRuleData {
+    this.listCache = null;
     const now = Date.now();
     const id = newId("dr");
     this.raw
@@ -69,6 +78,7 @@ export class DenoiseRepo {
   }
 
   update(id: string, input: Partial<DenoiseRuleInput>): DenoiseRuleData | undefined {
+    this.listCache = null;
     const existing = this.get(id);
     if (!existing) return undefined;
     const merged = {
@@ -97,6 +107,7 @@ export class DenoiseRepo {
   }
 
   delete(id: string): boolean {
+    this.listCache = null;
     const res = this.raw.prepare("DELETE FROM denoise_rules WHERE id = ?").run(id);
     return Number(res.changes) > 0;
   }

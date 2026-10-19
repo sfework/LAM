@@ -231,7 +231,7 @@ describe("internal read API", () => {
             body: JSON.stringify(payload),
           }),
         )
-      ).json() as { ok: boolean; data?: Record<string, unknown>; error?: { message: string } };
+      ).json() as Promise<{ ok: boolean; data?: Record<string, unknown>; error?: { message: string } }>;
     const pp = encodeURIComponent("d:/work/p");
 
     // global 条目：同样强制带 project_path（决策 82），部分更新只动传入字段
@@ -274,7 +274,7 @@ describe("internal read API", () => {
             body: JSON.stringify(payload),
           }),
         )
-      ).json() as { ok: boolean; data?: Record<string, unknown>; error?: { message: string } };
+      ).json() as Promise<{ ok: boolean; data?: Record<string, unknown>; error?: { message: string } }>;
 
     const r1 = await post({ id: a.id, body: "新定义", description: "新描述" });
     expect(r1.ok).toBe(true);
@@ -303,7 +303,7 @@ describe("internal read API", () => {
             body: JSON.stringify(payload),
           }),
         )
-      ).json() as { ok: boolean; data?: Record<string, unknown>; error?: { message: string } };
+      ).json() as Promise<{ ok: boolean; data?: Record<string, unknown>; error?: { message: string } }>;
 
     // 缺省 scope：建出的条目挂当前项目，本项目可读
     const r1 = await post(`/internal/knowledge/create?project_path=${pp}`, { title: "新指南", description: "d", body: "正文" });
@@ -345,7 +345,7 @@ describe("internal read API", () => {
             body: JSON.stringify(payload),
           }),
         )
-      ).json() as { ok: boolean; data?: Record<string, unknown> };
+      ).json() as Promise<{ ok: boolean; data?: Record<string, unknown> }>;
 
     const r1 = await post(`/internal/agents/create?project_path=${pp}`, { name: "tester", description: "d", body: "定义正文" });
     expect(r1.ok).toBe(true);

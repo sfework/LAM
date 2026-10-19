@@ -1,9 +1,10 @@
-/**
- * 协议适配器（DESIGN §2.1、决策 35）。
+/** 协议适配器（DESIGN §2.1、决策 35）。
  *
  * 本期只实现 ChatCompletionsAdapter；Responses API 留作扩展位（新增实现即可，
  * 除噪/注入/召回/回流等管线只认中间表示 ParsedChatRequest，不感知协议细节）。
  */
+
+import { isTextBlock } from "../utils/content.js";
 
 export interface ChatMessage {
   role: string;
@@ -32,13 +33,8 @@ export function messageText(content: unknown): string {
   if (Array.isArray(content)) {
     const parts: string[] = [];
     for (const block of content) {
-      if (
-        block &&
-        typeof block === "object" &&
-        (block as { type?: unknown }).type === "text" &&
-        typeof (block as { text?: unknown }).text === "string"
-      ) {
-        parts.push((block as { text: string }).text);
+      if (isTextBlock(block)) {
+        parts.push(block.text);
       }
     }
     return parts.join("\n");

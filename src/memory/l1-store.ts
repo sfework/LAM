@@ -132,6 +132,19 @@ export class L1Store {
     return r ? toRecord(r) : undefined;
   }
 
+  /** 批量按 id 读取（id → record；不存在的不含键）。searchHybrid 向量命中回表用，避免 N+1。 */
+  getMany(ids: readonly string[]): Map<string, L1Record> {
+    const out = new Map<string, L1Record>();
+    if (!ids.length) return out;
+    const ph = ids.map(() => "?").join(",");
+    const rows = this.raw.prepare(`SELECT * FROM mem_l1 WHERE id IN (${ph})`).all(...ids) as Record<string, unknown>[];
+    for (const r of rows) {
+      const rec = toRecord(r);
+      out.set(rec.id, rec);
+    }
+    return out;
+  }
+
   /** 读 L1 + 其溯源 L0 原文（memory_read 工具用）。 */
   readWithSources(id: string): { record: L1Record; sources: { role: string; content: string; createdAt: number }[] } | undefined {
     const rec = this.get(id);
@@ -310,12 +323,14 @@ export class L1Store {
     }
 
     const vecHits = this.searchVector(projectId, queryVec, fetch);
-    // 向量命中的 id → record（get 过滤软删/superseded），并按余弦相似度阈值过滤
+    // 向量命中的 id → record：一次 IN 批量回表（原逐条 get 为 N+1），
+    // 再按 vec 排名顺序装配，并做软删/superseded 过滤与余弦相似度阈值过滤。
+    const vecRows = new Map([...this.getMany(vecHits.map((h) => h.id)).values()].map((r) => [r.id, r]));
     const vecRecords: { record: L1Record; rank: number }[] = [];
     const vecIds = new Set<string>();
     for (const h of vecHits) {
       if (1 - h.distance < simMin) continue;
-      const rec = this.get(h.id);
+      const rec = vecRows.get(h.id);
       if (rec && rec.supersededBy === null && rec.deletedAt === null) {
         vecRecords.push({ record: rec, rank: vecRecords.length });
         vecIds.add(rec.id);

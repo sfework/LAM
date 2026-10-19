@@ -4,7 +4,6 @@ import type { L0Recorder } from "../memory/l0-recorder.js";
 import type { SettingsService } from "../settings/service.js";
 import type { ProjectRepo } from "../projects/repo.js";
 import { normalizeProjectPath } from "../projects/normalize.js";
-import type { LlmCallConfig } from "../llm/client.js";
 import { sha256 } from "../infra/hash.js";
 import { postRoutes, requireStr, optStr, badRequest, notFound, listRoute } from "./rest.js";
 import { createLogger } from "../infra/logger.js";
@@ -129,9 +128,8 @@ export function createMemoriesRouter(deps: {
     },
     "/rebuild-profile": async (b) => {
       const projectId = resolveProject(b);
-      const m = deps.settings.getResolvedModel("memory_llm");
-      if (!m) badRequest("memory_llm 未配置，无法重建画像");
-      const llm: LlmCallConfig = { baseUrl: m.url, apiKey: m.key, model: m.model };
+      const llm = deps.settings.getResolvedLlmConfig("memory_llm");
+      if (!llm) badRequest("memory_llm 未配置，无法重建画像");
       // 手动重建 = 全量重凝练（忽略增量水位）
       const { version } = await deps.l2.refine(projectId, llm, "full");
       const content = deps.l2.read(projectId);

@@ -8,6 +8,7 @@ import {
   type SettingValue,
 } from "./registry.js";
 import type { ModelRepo } from "../models/repo.js";
+import type { LlmCallConfig } from "../llm/client.js";
 import { createLogger } from "../infra/logger.js";
 
 const log = createLogger("settings");
@@ -84,6 +85,16 @@ export class SettingsService {
     if (!model) return undefined;
     if (def.modelCategory && model.category !== def.modelCategory) return undefined;
     return model;
+  }
+
+  /**
+   * 解析模型绑定项并组装为调用配置（baseUrl/apiKey/model）。
+   * 收口各管线（recall/backfill/scheduler/管理端）中重复的 getResolvedModel + 三字段组装；
+   * 未配置或无效返回 null（调用方据此降级）。
+   */
+  getResolvedLlmConfig(key: string): LlmCallConfig | null {
+    const m = this.getResolvedModel(key);
+    return m ? { baseUrl: m.url, apiKey: m.key, model: m.model } : null;
   }
 
   /**

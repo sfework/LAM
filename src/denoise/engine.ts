@@ -16,6 +16,8 @@
  *  - 例外：带 tool_calls 的 assistant 消息不删（其 content 常为空，删除会破坏
  *    与后续 tool 消息的配对，上游报 400）。 */
 
+import { isTextBlock } from "../utils/content.js";
+
 export interface DenoiseRuleData {
   id: string;
   startText: string;
@@ -41,6 +43,23 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * startText+endText → 编译后 RegExp 缓存（性能优化：客户端每轮全量重发历史，
+ * 规则不变时逐条消息重编译纯属浪费）。/g 的 replace 每次调用后自动复位 lastIndex，
+ * 同一实例跨文本复用安全；键数量以规则数为上界（个位数~十位数），不设淘汰。
+ */
+const patternCache = new Map<string, RegExp>();
+
+function rulePattern(startText: string, endText: string): RegExp {
+  const key = `${startText}\u0000${endText}`;
+  let re = patternCache.get(key);
+  if (!re) {
+    re = new RegExp(`${escapeRegExp(startText)}([\\s\\S]*?)${escapeRegExp(endText)}`, "g");
+    patternCache.set(key, re);
+  }
+  return re;
+}
+
 /** 对单段文本应用一条规则（删除或提取，见 rule.extract）。 */
 export function applyRuleToText(
   text: string,
@@ -55,7 +74,7 @@ export function applyRuleToText(
     return text.split(startText).join("");
   }
 
-  const re = new RegExp(`${escapeRegExp(startText)}([\\s\\S]*?)${escapeRegExp(endText)}`, "g");
+  const re = rulePattern(startText, endText);
   // 提取用回调而非 "$1"：避免保留内容里的 $& / $1 等被当作替换模式转义。
   return extract ? text.replace(re, (_m, inner: string) => inner) : text.replace(re, "");
 }
@@ -88,17 +107,11 @@ export function denoiseMessage<T extends ChatMessageLike>(msg: T, rules: readonl
     // 块数组：只处理 {type:"text", text:string} 块，其余块原样保留
     let changed = false;
     const blocks = (content as unknown[]).map((block) => {
-      if (
-        block &&
-        typeof block === "object" &&
-        (block as { type?: unknown }).type === "text" &&
-        typeof (block as { text?: unknown }).text === "string"
-      ) {
-        const b = block as { type: string; text: string };
-        const next = applyRulesToText(b.text, rules).trim();
-        if (next !== b.text) {
+      if (isTextBlock(block)) {
+        const next = applyRulesToText(block.text, rules).trim();
+        if (next !== block.text) {
           changed = true;
-          return { ...b, text: next };
+          return { ...block, text: next };
         }
       }
       return block;
@@ -116,13 +129,8 @@ function isEmptyTextContent(msg: ChatMessageLike): boolean {
     // 只要存在非文本块（如 image）就视为有内容；文本块全部为空才算空。
     let hasNonText = false;
     for (const block of content as unknown[]) {
-      if (
-        block &&
-        typeof block === "object" &&
-        (block as { type?: unknown }).type === "text" &&
-        typeof (block as { text?: unknown }).text === "string"
-      ) {
-        if (((block as { text: string }).text).trim() !== "") return false;
+      if (isTextBlock(block)) {
+        if (block.text.trim() !== "") return false;
       } else {
         hasNonText = true;
       }

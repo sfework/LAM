@@ -90,7 +90,7 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
     }
 
     // 6. 上游配置（以设置为准，忽略客户端 model）
-    const llm = deps.settings.getResolvedModel("gateway_llm");
+    const llm = deps.settings.getResolvedLlmConfig("gateway_llm");
     if (!llm) {
       return openaiError(c, 400, "llm_not_configured", "LLM 未配置，请在设置中绑定 gateway_llm");
     }
@@ -102,7 +102,7 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
     // 8. 转发 + 透传
     let result;
     try {
-      result = await forwardChat({ baseUrl: llm.url, apiKey: llm.key }, forwardBody, {
+      result = await forwardChat({ baseUrl: llm.baseUrl, apiKey: llm.apiKey }, forwardBody, {
         signal: c.req.raw.signal,
       });
     } catch (err) {

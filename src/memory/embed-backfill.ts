@@ -25,8 +25,7 @@ export class EmbeddingBackfiller {
 
   private config(): EmbeddingConfig | null {
     if (!this.store.vecEnabled) return null;
-    const m = this.settings.getResolvedModel("embedding_model");
-    return m ? { baseUrl: m.url, apiKey: m.key, model: m.model } : null;
+    return this.settings.getResolvedLlmConfig("embedding_model");
   }
 
   /** 处理一批缺失嵌入的 L1。返回处理条数。

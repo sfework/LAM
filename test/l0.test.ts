@@ -130,7 +130,7 @@ describe("L0Recorder", () => {
   it("memory 通道除噪：applyMemory=true 的规则生效", () => {
     ctx.sessions.create("s1", ctx.projectId, "header", Date.now());
     const rules: DenoiseRuleData[] = [
-      { id: "r1", startText: "<noise>", endText: "</noise>", applyForward: true, applyMemory: true, enabled: true, createdAt: 1 },
+      { id: "r1", startText: "<noise>", endText: "</noise>", extract: false, applyForward: true, applyMemory: true, enabled: true, createdAt: 1 },
     ];
     ctx.l0.recordTurn({
       projectId: ctx.projectId,
@@ -145,7 +145,7 @@ describe("L0Recorder", () => {
   it("applyMemory=false 的规则不影响 L0（存原文）", () => {
     ctx.sessions.create("s1", ctx.projectId, "header", Date.now());
     const rules: DenoiseRuleData[] = [
-      { id: "r1", startText: "<noise>", endText: "</noise>", applyForward: true, applyMemory: false, enabled: true, createdAt: 1 },
+      { id: "r1", startText: "<noise>", endText: "</noise>", extract: false, applyForward: true, applyMemory: false, enabled: true, createdAt: 1 },
     ];
     ctx.l0.recordTurn({
       projectId: ctx.projectId,

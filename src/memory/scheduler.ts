@@ -84,8 +84,7 @@ export class ExtractionScheduler {
   }
 
   private memoryLlm(): LlmCallConfig | null {
-    const m = this.settings.getResolvedModel("memory_llm");
-    return m ? { baseUrl: m.url, apiKey: m.key, model: m.model } : null;
+    return this.settings.getResolvedLlmConfig("memory_llm");
   }
 
   /**

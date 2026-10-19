@@ -5,7 +5,6 @@
  * 方案：索引与查询两侧统一做「CJK 二元组 + 拉丁词」预切分，用空格连接后交给 FTS5。
  */
 
-const CJK = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
 const CJK_RUN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+/g;
 const LATIN = /[a-zA-Z0-9_]+/g;
 
@@ -67,8 +66,4 @@ export function buildFtsQuery(text: string): string {
  */
 export function hasMeaningfulQuery(text: string): boolean {
   return buildFtsQuery(text) !== "";
-}
-
-export function containsCjk(text: string): boolean {
-  return CJK.test(text);
 }
