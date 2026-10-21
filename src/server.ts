@@ -71,6 +71,7 @@ export function createApp(deps: AppDeps): Hono {
   // GET 端点维持 query 传参。
   const POST_ENDPOINTS = new Set([
     "/internal/memory/batch-update",
+    "/internal/memory/batch-delete",
     "/internal/memory/save-profile",
     "/internal/knowledge/update",
     "/internal/knowledge/create",

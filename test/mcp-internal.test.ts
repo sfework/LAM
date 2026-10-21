@@ -111,7 +111,7 @@ describe("internal read API", () => {
     expect((rr.body.data as { content: string }).content).toContain("pnpm");
   });
 
-  it("memory/batch-read 分页读取 + memory/batch-update 批量改删（决策 79）", async () => {
+  it("memory/batch-read 分页读取 + memory/batch-update 改写 + memory/batch-delete 删除（决策 79）", async () => {
     const { app, projects, l1Store } = makeInternal();
     const { project } = projects.upsertOnRequest("d:/work/p");
     const ids = ["记忆甲", "记忆乙", "记忆丙"].map((c) =>
@@ -130,7 +130,7 @@ describe("internal read API", () => {
     // 翻页无重叠
     expect(new Set([...page1.list.map((x) => x.id), ...page2.list.map((x) => x.id)])).toHaveLength(3);
 
-    // 批量：改乙 + 删丙 + 一条不存在的失败（部分成功语义）
+    // 批量改写：改乙 + 一条不存在的失败（部分成功语义，成功与失败均逐条返回）
     const res = await app.fetch(
       new Request(`http://local/internal/memory/batch-update?project_path=${pp}`, {
         method: "POST",
@@ -138,20 +138,28 @@ describe("internal read API", () => {
         body: JSON.stringify({
           items: [
             { id: ids[1], content: "记忆乙（已修正）" },
-            { id: ids[2], action: "delete" },
             { id: "l1_missing", content: "x" },
           ],
         }),
       }),
     );
     const body = (await res.json()) as { ok: boolean; data: { results: { ok: boolean }[]; applied: number; skipped: number } };
-    expect(body.data.applied).toBe(2);
+    expect(body.data.applied).toBe(1);
     expect(body.data.skipped).toBe(1);
-    expect(body.data.results[2]!.ok).toBe(false);
+    expect(body.data.results[1]!.ok).toBe(false);
     expect(l1Store.get(ids[1]!)!.content).toBe("记忆乙（已修正）");
-    expect(l1Store.get(ids[2]!)).toBeUndefined();
 
-    // 跨项目记忆拒绝操作
+    // 改写单批上限 20 条
+    const over = await app.fetch(
+      new Request(`http://local/internal/memory/batch-update?project_path=${pp}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: Array.from({ length: 21 }, (_, i) => ({ id: `l1_x${i}`, content: "x" })) }),
+      }),
+    );
+    expect(over.status).toBe(400);
+
+    // 跨项目记忆拒绝改写
     const other = projects.upsertOnRequest("d:/work/q").project;
     const otherId = l1Store.insert(other.id, { kind: "fact", content: "他项目记忆", priority: 80, sceneName: "", sourceL0Ids: [], batchId: null, createdAt: Date.now() });
     const bad = (await (
@@ -159,11 +167,31 @@ describe("internal read API", () => {
         new Request(`http://local/internal/memory/batch-update?project_path=${pp}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ items: [{ id: otherId, action: "delete" }] }),
+          body: JSON.stringify({ items: [{ id: otherId, content: "改写他项目" }] }),
         }),
       )
     ).json()) as { data: { applied: number } };
     expect(bad.data.applied).toBe(0);
+
+    // 批量删除：删丙成功（只计数）+ 跨项目失败（逐条返回原因），数量不设上限
+    const del = await app.fetch(
+      new Request(`http://local/internal/memory/batch-delete?project_path=${pp}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids: [ids[2], otherId, "l1_missing"] }),
+      }),
+    );
+    const delBody = (await del.json()) as {
+      ok: boolean;
+      data: { results: { id: string; error: string }[]; applied: number; skipped: number };
+    };
+    expect(delBody.data.applied).toBe(1);
+    expect(delBody.data.skipped).toBe(2);
+    expect(delBody.data.results).toHaveLength(2);
+    expect(delBody.data.results[0]!.error).toContain("不属于该项目");
+    expect(l1Store.get(ids[2]!)).toBeUndefined();
+    // 删除是物理删，跨项目条目不受影响
+    expect(l1Store.get(otherId)!.content).toBe("他项目记忆");
   });
 
   it("memory/profile 读画像（含 version/updatedAt，决策 80）", async () => {
@@ -461,6 +489,7 @@ describe("MCP 薄壳端到端（真实 HTTP + InMemory client）", () => {
     expect(toolNames).toContain("memory_search");
     expect(toolNames).toContain("memory_batch_read");
     expect(toolNames).toContain("memory_batch_update");
+    expect(toolNames).toContain("memory_batch_delete");
     expect(toolNames).toContain("memory_profile_read");
     expect(toolNames).toContain("memory_profile_update");
     expect(toolNames).toContain("knowledge_update");

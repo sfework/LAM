@@ -232,22 +232,21 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "memory_batch_update",
     description:
-      "批量维护（更新/删除）项目结构化记忆，用于 Agent 主动修正错述、合并改写或清理过时条目。items 单批最多 50 条；action 缺省 update（改 content），delete 为物理删除。逐条返回结果，单条失败不影响其余。不计入检索限流。【使用红线】写操作：除非用户明确要求整理/维护记忆，否则禁止自行调用。",
+      "批量改写项目结构化记忆正文（仅 update，不含删除；删除请用 memory_batch_delete），用于 Agent 主动修正错述、合并改写。items 单批最多 20 条，每条 content 必填且 ≤2000 字符。逐条返回结果，单条失败不影响其余。不计入检索限流。【使用红线】写操作：除非用户明确要求整理/维护记忆，否则禁止自行调用。",
     inputSchema: {
       type: "object",
       properties: {
         project_path: PROJECT_PATH_PROP,
         items: {
           type: "array",
-          description: "批量操作清单。",
+          description: "批量改写清单（最多 20 条）。",
           items: {
             type: "object",
             properties: {
               id: { type: "string", description: "记忆 id（来自 memory_search / memory_batch_read）。" },
-              content: { type: "string", description: "新正文（update 必填，≤2000 字符）。" },
-              action: { type: "string", enum: ["update", "delete"], description: "缺省 update。" },
+              content: { type: "string", description: "新正文（必填，≤2000 字符，覆盖原正文）。" },
             },
-            required: ["id"],
+            required: ["id", "content"],
             additionalProperties: false,
           },
         },
@@ -256,6 +255,25 @@ export const TOOL_DEFS: ToolDef[] = [
       additionalProperties: false,
     },
     endpoint: "/internal/memory/batch-update",
+  },
+  {
+    name: "memory_batch_delete",
+    description:
+      "批量物理删除项目结构化记忆（不可恢复），用于清理过时、错误或已确认对当前项目无用的条目。ids 单批数量不限，逐条校验有效性与项目归属；为控制上下文体积，成功只返回计数（applied），失败才逐条返回原因。不计入检索限流。【使用红线】写操作：除非用户明确要求删除/维护记忆，否则禁止自行调用。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_path: PROJECT_PATH_PROP,
+        ids: {
+          type: "array",
+          description: "待删除的记忆 id 列表（来自 memory_search / memory_batch_read）。",
+          items: { type: "string" },
+        },
+      },
+      required: ["project_path", "ids"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/memory/batch-delete",
   },
   {
     name: "memory_profile_read",

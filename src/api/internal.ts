@@ -236,9 +236,9 @@ export function createInternalRouter(deps: InternalDeps): Hono {
     });
   });
   /**
-   * 批量维护记忆（MCP memory_batch_update 用，决策 79）：items 逐条处理，
-   * action 缺省 update（改正文，复用 updateContent 的 FTS 重建 + 向量失效补嵌入链路），
-   * "delete" 为物理删除（与管理台决策 56 一致）。部分成功语义：单条失败不影响其余。
+   * 批量改写记忆正文（MCP memory_batch_update 用，决策 79）：items 逐条处理，
+   * 复用 updateContent 的 FTS 重建 + 向量失效补嵌入链路。删除归 /memory/batch-delete。
+   * 部分成功语义：单条失败不影响其余，成功与失败均逐条返回。
    */
   app.post("/memory/batch-update", async (c) => {
     const b = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
@@ -246,49 +246,65 @@ export function createInternalRouter(deps: InternalDeps): Hono {
     if (!projectId) return bad(c, "无法解析 project_path");
     const rawItems = b?.items;
     if (!Array.isArray(rawItems) || !rawItems.length) return bad(c, "items 需为非空数组");
-    if (rawItems.length > 50) return bad(c, "单批最多 50 条");
+    if (rawItems.length > 20) return bad(c, "单批最多 20 条");
     const results: Record<string, unknown>[] = [];
     for (const it of rawItems) {
       const item = (it ?? {}) as Record<string, unknown>;
       const id = typeof item.id === "string" ? item.id : "";
-      const action = item.action === "delete" ? "delete" : "update";
-      if (!id) {
-        results.push({ id, ok: false, error: "id 必填" });
+      const guard = guardActionableMemory(deps, id, projectId);
+      if (guard) {
+        results.push({ id, ok: false, error: guard });
         continue;
       }
-      const existing = deps.l1.get(id);
-      if (!existing || existing.deletedAt !== null || existing.supersededBy !== null) {
-        results.push({ id, ok: false, error: "记忆不存在或已失效" });
+      const content = typeof item.content === "string" ? item.content.trim() : "";
+      if (!content) {
+        results.push({ id, ok: false, error: "content 需为非空字符串" });
         continue;
       }
-      if (existing.projectId !== projectId) {
-        results.push({ id, ok: false, error: "记忆不属于该项目" });
+      if (content.length > 2000) {
+        results.push({ id, ok: false, error: "content 超 2000 字符上限，请拆分" });
         continue;
       }
       try {
-        if (action === "delete") {
-          deps.l1.remove(id);
-          results.push({ id, ok: true, deleted: true });
-        } else {
-          const content = typeof item.content === "string" ? item.content.trim() : "";
-          if (!content) {
-            results.push({ id, ok: false, error: "update 需传非空 content" });
-            continue;
-          }
-          if (content.length > 2000) {
-            results.push({ id, ok: false, error: "content 超 2000 字符上限，请拆分" });
-            continue;
-          }
-          const { changed } = deps.l1.updateContent(id, content);
-          results.push({ id, ok: true, changed });
-        }
+        const { changed } = deps.l1.updateContent(id, content);
+        results.push({ id, ok: true, changed });
       } catch (err) {
         results.push({ id, ok: false, error: String(err) });
       }
     }
     const applied = results.filter((r) => r.ok).length;
-    log.info({ projectId, batch: results.length, applied, items: rawItems }, "MCP 批量维护记忆");
+    log.info({ projectId, batch: results.length, applied }, "MCP 批量改写记忆");
     return ok(c, { results, applied, skipped: results.length - applied });
+  });
+  /**
+   * 批量物理删除记忆（MCP memory_batch_delete 用）：ids 数量不设上限（删除是收敛动作，
+   * 不该被分片折腾），逐条校验有效性与项目归属，物理删除与管理台决策 56 一致。
+   * 为免撑爆模型上下文：成功只计数（applied），失败才逐条返回原因。
+   */
+  app.post("/memory/batch-delete", async (c) => {
+    const b = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    const projectId = resolveProjectId(deps, c);
+    if (!projectId) return bad(c, "无法解析 project_path");
+    const rawIds = b?.ids;
+    if (!Array.isArray(rawIds) || !rawIds.length) return bad(c, "ids 需为非空数组");
+    const failures: Record<string, unknown>[] = [];
+    let applied = 0;
+    for (const rid of rawIds) {
+      const id = typeof rid === "string" ? rid : "";
+      const guard = guardActionableMemory(deps, id, projectId);
+      if (guard) {
+        failures.push({ id, ok: false, error: guard });
+        continue;
+      }
+      try {
+        if (deps.l1.remove(id)) applied++;
+        else failures.push({ id, ok: false, error: "删除失败（行不存在）" });
+      } catch (err) {
+        failures.push({ id, ok: false, error: String(err) });
+      }
+    }
+    log.info({ projectId, batch: rawIds.length, applied, failed: failures.length }, "MCP 批量删除记忆");
+    return ok(c, { results: failures, applied, skipped: rawIds.length - applied });
   });
   app.get("/memory/profile", (c) => {
     const projectId = resolveProjectId(deps, c);
@@ -385,6 +401,17 @@ function resolveProjectId(deps: InternalDeps, c: Context): string | null {
     return null;
   }
   return p.id;
+}
+
+/** 批量改/删的前置校验：返回失败原因，通过则 null。 */
+function guardActionableMemory(deps: InternalDeps, id: string, projectId: string): string | null {
+  if (!id) return "id 必填";
+  const existing = deps.l1.get(id);
+  if (!existing || existing.deletedAt !== null || existing.supersededBy !== null) {
+    return "记忆不存在或已失效";
+  }
+  if (existing.projectId !== projectId) return "记忆不属于该项目";
+  return null;
 }
 
 function intQuery(c: Context, key: string, dflt: number): number {

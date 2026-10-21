@@ -173,7 +173,7 @@ MCP Server 挂在同一端口：**`http://localhost:8790/mcp`**（Streamable HTT
 |------|------|------|
 | 知识库 | `knowledge_read` / `knowledge_create` / `knowledge_update` / `knowledge_delete` | 按 id 读正文（清单已注入系统提示 `<knowledge>` 段）/ 建条目（缺省挂本项目，可 global）/ 部分更新内容字段 / 物理删除 |
 | Agents | `agent_read` / `agent_create` / `agent_update` / `agent_delete` | 按 id 读正文（清单已注入系统提示 `<agents>` 段）/ 新建定义 / 部分更新 / 删除 |
-| 记忆 | `memory_search` / `memory_batch_read` / `memory_batch_update` / `memory_profile_read` / `memory_profile_update` | 检索 L1 / 分页读全部活跃记忆（从早到晚）/ 批量改删（记忆维护）/ 读 L2 画像 / 整篇保存 L2 画像 |
+| 记忆 | `memory_search` / `memory_batch_read` / `memory_batch_update` / `memory_batch_delete` / `memory_profile_read` / `memory_profile_update` | 检索 L1 / 分页读全部活跃记忆（从早到晚）/ 批量改写正文（单批 ≤20）/ 批量物理删除（数量不限）/ 读 L2 画像 / 整篇保存 L2 画像 |
 | 对话 | `conversation_search` | 检索 L0 原文 |
 | SQL | `sql_query_<方言>` / `sql_list_tables_<方言>` / `sql_describe_table_<方言>` | 外部业务库只读查询（方言：sqlite / postgresql / mysql / sqlserver） |
 
