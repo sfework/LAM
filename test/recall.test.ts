@@ -172,15 +172,16 @@ describe("MemoryRecaller", () => {
     expect(block).toContain("<recalled>");
     expect(block).toContain("仅用于辅助回答当前这一轮");
     expect(block).toContain("[persona");
-    expect(block).toContain("pnpm");
-  });
+    expect(block).toContain("pnpm");    // 决策 88：块尾自维护提示——只授权改/删本轮条目，新增仍走提取管线
+    expect(block).toContain("memory_batch_update");
+    expect(block).toContain("不要新增记忆");  });
 
-  it("l1_recall_enabled=false 关闭召回", async () => {
+  it("l1_recall_top_k 限制注入条数上限", async () => {
     const ctx = fresh(false);
-    ctx.store.insert(ctx.projectId, mk("记忆"));
-    ctx.settings.set("l1_recall_enabled", "false");
+    for (let i = 0; i < 5; i++) ctx.store.insert(ctx.projectId, mk(`记忆 编号 ${i} 内容`));
+    ctx.settings.set("l1_recall_top_k", "2");
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
-    expect((await recaller.recall(ctx.projectId, ["记忆"])).count).toBe(0);
+    expect((await recaller.recall(ctx.projectId, ["记忆 编号"])).count).toBeLessThanOrEqual(2);
   });
 
   it("instruction 类记忆不参与注入召回（决策 79），memory_search 通道仍可命中", async () => {
@@ -258,14 +259,16 @@ describe("MemoryRecaller", () => {
     expect(block).toBe("");
   });
 
-  it("字符上限截断召回块", async () => {
+  it("召回块不再做字符预算截断（决策：取消 l1_recall_max_chars*）", async () => {
     const ctx = fresh(false);
     for (let i = 0; i < 5; i++) ctx.store.insert(ctx.projectId, mk(`记忆条目编号 ${i} 内容较长`));
-    ctx.settings.set("l1_recall_max_chars", "80");
     ctx.settings.set("l1_recall_top_k", "5");
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
-    const { block } = await recaller.recall(ctx.projectId, ["记忆 条目 编号"]);
-    expect(block).toContain("已截断");
+    const { block, count } = await recaller.recall(ctx.projectId, ["记忆 条目 编号"]);
+    expect(count).toBe(5);
+    expect(block).not.toContain("已截断");
+    // 每条完整正文原样渲染
+    for (let i = 0; i < 5; i++) expect(block).toContain(`记忆条目编号 ${i} 内容较长`);
   });
 
   it("纯寒暄输入（好的）经停用词短路，不产生召回", async () => {
@@ -285,30 +288,14 @@ describe("MemoryRecaller", () => {
     expect((await recaller.recall(ctx.projectId, ["按此执行"])).count).toBeGreaterThan(0);
   });
 
-  it("单条超 per-item 上限时逐条截断保留头部", async () => {
+  it("单条超长正文也完整渲染（per-item 截断已取消）", async () => {
     const ctx = fresh(false);
-    ctx.store.insert(ctx.projectId, mk("记忆甲" + "长".repeat(300)));
-    ctx.settings.set("l1_recall_max_chars_per_item", "50");
+    const long = "记忆甲" + "长".repeat(300);
+    ctx.store.insert(ctx.projectId, mk(long));
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
     const { block } = await recaller.recall(ctx.projectId, ["记忆甲"]);
-    const itemLine = block.split("\n").find((l) => l.includes("记忆甲"));
-    expect(itemLine).toBeDefined();
-    expect([...(itemLine ?? "")].length).toBeLessThanOrEqual(50);
-    expect(itemLine).toContain("…");
-  });
-
-  it("总预算剩余足够时截半条塞入而非整条丢弃", async () => {
-    const ctx = fresh(false);
-    ctx.store.insert(ctx.projectId, mk("编号零 内容", "fact", 90));
-    ctx.store.insert(ctx.projectId, mk("编号一 内容较长" + "字".repeat(100)));
-    ctx.settings.set("l1_recall_max_chars_per_item", "0"); // 只考察总预算
-    // 预算：头部两行 + 第一条 + 第二条放不下整行但够半条（≥40）
-    ctx.settings.set("l1_recall_max_chars", "180");
-    const recaller = new MemoryRecaller(ctx.store, ctx.settings);
-    const { block } = await recaller.recall(ctx.projectId, ["编号 内容"]);
-    expect(block).toContain("已截断");
-    // 第二条以截断形式部分出现（含"编号一"头部），而非直接消失
-    expect(block).toContain("编号一");
+    expect(block).toContain(long);
+    expect(block).not.toContain("…");
   });
 
   it("多条 user 消息拼接检索：短追问靠上文命中", async () => {
@@ -331,7 +318,7 @@ describe("MemoryRecaller", () => {
     expect(count).toBe(0);
   });
 
-  it("召回缓存：同项目同检索词第二次命中缓存（cached=true，不重复检索）", async () => {
+  it("召回缓存：同项目同检索词第二次命中缓存（不重复检索，块字节一致）", async () => {
     const ctx = fresh(false);
     ctx.store.insert(ctx.projectId, mk("用户偏好使用 pnpm 管理依赖", "persona", 90));
     let embedCalls = 0;
@@ -341,13 +328,14 @@ describe("MemoryRecaller", () => {
     });
     const r1 = await recaller.recall(ctx.projectId, ["依赖管理用什么工具"]);
     expect(r1.count).toBe(1);
-    expect(r1.cached).toBeUndefined();
+    expect(embedCalls).toBe(1);
     const r2 = await recaller.recall(ctx.projectId, ["依赖管理用什么工具"]);
-    expect(r2.cached).toBe(true);
-    expect(r2.block).toBe(r1.block); // 字节级一致（利上游 KV cache）
+    // 缓存命中：不再调 embedding，且注入块逐字节一致（利上游 KV cache）
+    expect(embedCalls).toBe(1);
+    expect(r2.block).toBe(r1.block);
     // 不同检索词不命中缓存
-    const r3 = await recaller.recall(ctx.projectId, ["另一个完全不同的问题 abc"]);
-    expect(r3.cached).toBeUndefined();
+    await recaller.recall(ctx.projectId, ["另一个完全不同的问题 abc"]);
+    expect(embedCalls).toBe(2);
   });
 
   it("审计字段：items 携带 score 与 source", async () => {

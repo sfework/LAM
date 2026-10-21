@@ -3,7 +3,6 @@ import type { ProjectRepo } from "../projects/repo.js";
 import { normalizeProjectPath } from "../projects/normalize.js";
 import type { AssetsRepo } from "../assets/repo.js";
 import type { L1Store } from "../memory/l1-store.js";
-import type { L0Recorder } from "../memory/l0-recorder.js";
 import type { L2Refiner } from "../memory/l2-refiner.js";
 import type { MemoryRecaller } from "../memory/recall.js";
 import type { SettingsService } from "../settings/service.js";
@@ -23,7 +22,6 @@ export interface InternalDeps {
   projects: ProjectRepo;
   assets: AssetsRepo;
   l1: L1Store;
-  l0: L0Recorder;
   l2: L2Refiner;
   recaller: MemoryRecaller;
   settings: SettingsService;
@@ -328,18 +326,8 @@ export function createInternalRouter(deps: InternalDeps): Hono {
     return ok(c, { changed, version });
   });
 
-  // ── conversation (L0) ──
-  app.get("/conversation/search", (c) => {
-    const projectId = resolveProjectId(deps, c);
-    if (!projectId) return bad(c, "无法解析 project_path");
-    const query = c.req.query("query") ?? "";
-    const limit = intQuery(c, "limit", 10);
-    const hits = deps.l0.search(projectId, query, limit);
-    return ok(c, hits.map((h) => ({ id: h.row.id, role: h.row.role, content: h.row.content, createdAt: h.row.createdAt, score: Number(h.score.toFixed(4)) })));
-  });
-
   // ── SQL 只读查询（外部业务库；连接串由调用方直传，不在本库登记）──
-  // 四方言共用端点，方言走路径段：/sql/<dialect>/query|tables|describe
+  // 四方言共用端点，方言走路径段：/sql/<dialect>/query（表结构元数据工具已移除，模型按需 SELECT 系统表）
   app.get("/sql/:dialect/query", async (c) => {
     const dialect = c.req.param("dialect");
     if (!isDialect(dialect)) return bad(c, `不支持的数据库类型: ${dialect}`);
@@ -348,22 +336,6 @@ export function createInternalRouter(deps: InternalDeps): Hono {
     if (!connectionString.trim()) return bad(c, "connection_string 必填");
     if (!statement.trim()) return bad(c, "sql 必填");
     return sqlResult(c, () => deps.sql.query(dialect, connectionString, statement));
-  });
-  app.get("/sql/:dialect/tables", async (c) => {
-    const dialect = c.req.param("dialect");
-    if (!isDialect(dialect)) return bad(c, `不支持的数据库类型: ${dialect}`);
-    const connectionString = c.req.query("connection_string") ?? "";
-    if (!connectionString.trim()) return bad(c, "connection_string 必填");
-    return sqlResult(c, () => deps.sql.listTables(dialect, connectionString, c.req.query("keyword")));
-  });
-  app.get("/sql/:dialect/describe", async (c) => {
-    const dialect = c.req.param("dialect");
-    if (!isDialect(dialect)) return bad(c, `不支持的数据库类型: ${dialect}`);
-    const connectionString = c.req.query("connection_string") ?? "";
-    const table = c.req.query("table") ?? "";
-    if (!connectionString.trim()) return bad(c, "connection_string 必填");
-    if (!table.trim()) return bad(c, "table 必填");
-    return sqlResult(c, () => deps.sql.describeTable(dialect, connectionString, table));
   });
 
   return app;

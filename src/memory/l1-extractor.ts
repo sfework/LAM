@@ -4,10 +4,11 @@ import { parseLlmJsonArray } from "../utils/json.js";
 import { newId } from "../infra/id.js";
 import { createLogger } from "../infra/logger.js";
 import {
-  getExtractSystemPrompt,
+  EXTRACT_SYSTEM_PROMPT,
   formatExtractionPrompt,
-  getConflictSystemPrompt,
+  CONFLICT_SYSTEM_PROMPT,
   formatBatchConflictPrompt,
+  L1_KINDS,
   type L1Kind,
   type ConflictMatch,
   type ExtractMessage,
@@ -26,7 +27,6 @@ export interface ExtractResult {
 
 interface LlmSceneSegment {
   scene_name?: unknown;
-  message_ids?: unknown;
   memories?: unknown;
 }
 
@@ -243,7 +243,7 @@ export class L1Extractor {
       const out = await this.llmCall(
         llm,
         [
-          { role: "system", content: getExtractSystemPrompt(this.settings.getInt("l1_max_chars")) },
+          { role: "system", content: EXTRACT_SYSTEM_PROMPT(this.settings.getInt("l1_max_chars")) },
           {
             role: "user",
             content: formatExtractionPrompt({
@@ -272,7 +272,7 @@ export class L1Extractor {
       const out = await this.llmCall(
         llm,
         [
-          { role: "system", content: getConflictSystemPrompt() },
+          { role: "system", content: CONFLICT_SYSTEM_PROMPT },
           { role: "user", content: formatBatchConflictPrompt(matches) },
         ],
         { json: true, temperature: 0.1, onUsage: usage ? usageRecorder(usage) : undefined },
@@ -343,7 +343,7 @@ function mergeTimestamps(sources: string[], merged: string[]): string {
   return JSON.stringify(base);
 }
 
-const KIND_SET = new Set<string>(["persona", "episodic", "instruction", "fact", "method", "artifact"]);
+const KIND_SET = new Set<string>(L1_KINDS);
 function isL1Kind(s: unknown): s is L1Kind {
   return typeof s === "string" && KIND_SET.has(s);
 }

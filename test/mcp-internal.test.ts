@@ -36,16 +36,16 @@ function makeInternal() {
   const denoise = new DenoiseRepo(raw);
   const assets = new AssetsRepo(raw);
   const sessions = new SessionRepo(raw);
-  const snapshot = new SnapshotBuilder(assets, settings);
+  const snapshot = new SnapshotBuilder(assets);
   const l0 = new L0Recorder(raw, true);
   const l1Store = new L1Store(raw, true, false);
   const l2 = new L2Refiner(raw, l1Store, settings);
   const recaller = new MemoryRecaller(l1Store, settings);
   const sql = new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") });
-  const internal: InternalDeps = { projects, assets, l1: l1Store, l0, l2, recaller, settings, sql };
+  const internal: InternalDeps = { projects, assets, l1: l1Store, l2, recaller, settings, sql };
   const deps: AppDeps = {
     api: { models, settings, projects, denoise, assets, l0, l1: l1Store, l2 },
-    gateway: { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller },
+    gateway: { projects, denoise, settings, sessions, snapshot, l0, l2, recaller },
     internal,
   };
   return { app: createApp(deps), projects, assets, l1Store, l0, l2, sessions, raw };
@@ -388,23 +388,6 @@ describe("internal read API", () => {
     expect((await post(`/internal/agents/delete?project_path=${pp}`, { id: "agt_missing" })).ok).toBe(false);
   });
 
-  it("conversation/search 检索 L0 原文", async () => {
-    const { app, projects, l0, sessions } = makeInternal();
-    const { project } = projects.upsertOnRequest("d:/work/p");
-    sessions.create("s1", project.id, "header", Date.now());
-    l0.recordTurn({
-      projectId: project.id,
-      sessionKey: "s1",
-      requestMessages: [{ role: "user", content: "如何配置 nginx 反向代理" }],
-      aggregate: { text: "在 nginx.conf 里配置 proxy_pass", toolCallCount: 0, final: true },
-      allRules: [],
-    });
-    const r = await get(app, `/internal/conversation/search?project_path=${encodeURIComponent("d:/work/p")}&query=nginx 反向代理`);
-    const hits = r.body.data as { content: string }[];
-    expect(hits.length).toBeGreaterThan(0);
-    expect(JSON.stringify(hits)).toContain("nginx");
-  });
-
   it("project_path 不存在 → 空/错误", async () => {
     const { app } = makeInternal();
     const r = await get(app, `/internal/memory/search?project_path=${encodeURIComponent("e:/nope")}&query=x`);
@@ -492,6 +475,8 @@ describe("MCP 薄壳端到端（真实 HTTP + InMemory client）", () => {
     expect(toolNames).toContain("memory_batch_delete");
     expect(toolNames).toContain("memory_profile_read");
     expect(toolNames).toContain("memory_profile_update");
+    expect(toolNames).not.toContain("memory_maintain");
+    expect(toolNames).not.toContain("conversation_search");
     expect(toolNames).toContain("knowledge_update");
     expect(toolNames).toContain("agent_update");
     // 决策 83：资产增删工具开放；写类工具描述含使用红线
@@ -505,8 +490,9 @@ describe("MCP 薄壳端到端（真实 HTTP + InMemory client）", () => {
     expect(toolNames).not.toContain("memory_read_profile");
     expect(toolNames).toContain("knowledge_read");
     expect(toolNames).toContain("sql_query_sqlite");
-    expect(toolNames).toContain("sql_list_tables_mysql");
-    expect(toolNames).toContain("sql_describe_table_sqlserver");
+    // SQL 元数据工具已下线，仅保留 sql_query_*
+    expect(toolNames).not.toContain("sql_list_tables_mysql");
+    expect(toolNames).not.toContain("sql_describe_table_sqlserver");
     // CodeGraph 已移除：codegraph_* 工具不再暴露
     expect(toolNames).not.toContain("codegraph_search");
     expect(toolNames).not.toContain("codegraph_status");
@@ -526,12 +512,6 @@ describe("MCP 薄壳端到端（真实 HTTP + InMemory client）", () => {
     const client = await mcpClient();
     const ok = await client.callTool({ name: "sql_query_sqlite", arguments: { connection_string: file, sql: "SELECT name FROM t ORDER BY id" } });
     expect((ok.content as { text: string }[])[0]!.text).toContain("甲");
-
-    const tables = await client.callTool({ name: "sql_list_tables_sqlite", arguments: { connection_string: file } });
-    expect((tables.content as { text: string }[])[0]!.text).toContain("\"name\": \"t\"");
-
-    const desc = await client.callTool({ name: "sql_describe_table_sqlite", arguments: { connection_string: file, table: "t" } });
-    expect((desc.content as { text: string }[])[0]!.text).toContain("id");
 
     // 写操作：以文本结果返回拒绝原因（不是 isError）
     const denied = await client.callTool({ name: "sql_query_sqlite", arguments: { connection_string: file, sql: "DELETE FROM t" } });

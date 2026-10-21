@@ -62,15 +62,23 @@ function makeApp() {
   const denoise = new DenoiseRepo(raw);
   const assets = new AssetsRepo(raw);
   const sessions = new SessionRepo(raw);
-  const snapshot = new SnapshotBuilder(assets, settings);
+  const snapshot = new SnapshotBuilder(assets);
   const l0 = new L0Recorder(raw);
   const l1Store = new L1Store(raw, true, false);
   const l2 = new L2Refiner(raw, l1Store, settings);
   const recaller = new MemoryRecaller(l1Store, settings);
   const deps: AppDeps = {
     api: { models, settings, projects, denoise, assets, l0, l1: l1Store, l2 },
-    gateway: { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller },
-    internal: { projects, assets, l1: l1Store, l0, l2, recaller, settings, sql: new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") }) },
+    gateway: { projects, denoise, settings, sessions, snapshot, l0, l2, recaller },
+    internal: {
+      projects,
+      assets,
+      l1: l1Store,
+      l2,
+      recaller,
+      settings,
+      sql: new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") }),
+    },
   };
   return { app: createApp(deps), raw, models, settings, assets, denoise, sessions, l0, l1Store, recaller, projects };
 }
@@ -98,7 +106,6 @@ describe("gateway e2e", () => {
     const { app, models, settings } = makeApp();
     const m = models.create({ category: "llm", name: "mock", url: `http://localhost:${upstreamPort}`, key: "k", model: "real-model" });
     settings.set("gateway_llm", m.id);
-    settings.set("l1_recall_enabled", "false");
 
     const res = await postChat(
       app,
@@ -123,7 +130,6 @@ describe("gateway e2e", () => {
     const { app, models, settings } = makeApp();
     const m = models.create({ category: "llm", name: "mock", url: `http://localhost:${upstreamPort}`, key: "", model: "rm" });
     settings.set("gateway_llm", m.id);
-    settings.set("l1_recall_enabled", "false");
 
     const sys1 = [{ role: "system", content: "BASE" }, { role: "user", content: "q1" }];
     await (await postChat(app, { model: "x", messages: sys1 }, { "x-session-id": "sess-A", "x-project-path": "d:/work/p" })).text();
@@ -148,7 +154,6 @@ describe("gateway e2e", () => {
     const { app, models, settings, assets } = makeApp();
     const m = models.create({ category: "llm", name: "mock", url: `http://localhost:${upstreamPort}`, key: "", model: "rm" });
     settings.set("gateway_llm", m.id);
-    settings.set("l1_recall_enabled", "false");
     assets.createPrompt({ name: "p", content: "ALWAYS BE CONCISE", enabled: true });
     const kn = assets.createKnowledge({ title: "架构指南", description: "系统架构", scope: "global", enabled: true });
     const ag = assets.createAgent({ name: "reviewer", description: "代码评审", body: "b", enabled: true });
@@ -169,7 +174,6 @@ describe("gateway e2e", () => {
     const { app, models, settings, denoise } = makeApp();
     const m = models.create({ category: "llm", name: "mock", url: `http://localhost:${upstreamPort}`, key: "", model: "rm" });
     settings.set("gateway_llm", m.id);
-    settings.set("l1_recall_enabled", "false");
     denoise.create({ startText: "<replaced>", endText: "</replaced>", applyForward: true, applyMemory: true, enabled: true });
 
     await (
@@ -183,7 +187,6 @@ describe("gateway e2e", () => {
     const { app, models, settings } = makeApp();
     const m = models.create({ category: "llm", name: "mock", url: `http://localhost:${upstreamPort}`, key: "", model: "rm" });
     settings.set("gateway_llm", m.id);
-    settings.set("l1_recall_enabled", "false");
     upstreamMode = "stream";
     try {
       const res = await postChat(app, { model: "x", stream: true, messages: [{ role: "user", content: "hi" }] }, { "x-project-path": "d:/work/p" });
@@ -206,7 +209,6 @@ describe("gateway e2e", () => {
     const { app, models, settings, l1Store, projects } = makeApp();
     const m = models.create({ category: "llm", name: "mock", url: `http://localhost:${upstreamPort}`, key: "", model: "rm" });
     settings.set("gateway_llm", m.id);
-    settings.set("l1_recall_enabled", "true");
     const { project } = projects.upsertOnRequest("d:/work/p");
     l1Store.insert(project.id, { kind: "persona", content: "用户偏好使用 pnpm 管理依赖", priority: 90, sceneName: "s", sourceL0Ids: [], batchId: null, createdAt: Date.now() });
 
@@ -233,7 +235,6 @@ describe("gateway e2e", () => {
     const { app, models, settings, raw } = makeApp();
     const m = models.create({ category: "llm", name: "mock", url: `http://localhost:${upstreamPort}`, key: "", model: "rm" });
     settings.set("gateway_llm", m.id);
-    settings.set("l1_recall_enabled", "false");
 
     const res = await postChat(app, { model: "x", messages: [{ role: "user", content: "hi" }] });
     expect(res.status).toBe(200);
@@ -251,8 +252,6 @@ describe("gateway e2e", () => {
     const { app, raw, models, settings, sessions } = makeApp();
     const m = models.create({ category: "llm", name: "mock", url: `http://localhost:${upstreamPort}`, key: "", model: "rm" });
     settings.set("gateway_llm", m.id);
-    settings.set("l1_recall_enabled", "false");
-    settings.set("extraction_enabled", "true");
 
     const res = await postChat(
       app,
@@ -276,12 +275,10 @@ describe("gateway e2e", () => {
     expect(ps.conversation_count).toBe(1);
   });
 
-  it("extraction_enabled=false 时 L0 仍落库（该开关只 gate 阶段6提取）", async () => {
+  it("写侧提取常驻：final answer 无总闸拦截，L0 始终落库", async () => {
     const { app, raw, models, settings } = makeApp();
     const m = models.create({ category: "llm", name: "mock", url: `http://localhost:${upstreamPort}`, key: "", model: "rm" });
     settings.set("gateway_llm", m.id);
-    settings.set("l1_recall_enabled", "false");
-    settings.set("extraction_enabled", "false");
 
     const res = await postChat(
       app,

@@ -11,7 +11,7 @@
  */
 
 import { createLogger } from "../infra/logger.js";
-import { Dialects, describeDriverError, normalizeValue, type SqlDialect } from "./drivers.js";
+import { Dialects, describeDriverError, type SqlDialect } from "./drivers.js";
 import { SqlGuardError, assertReadOnlySql } from "./guard.js";
 
 const log = createLogger("sql");
@@ -64,23 +64,7 @@ export class SqlService {
     const truncated = rows.length > maxRows;
     const kept = truncated ? rows.slice(0, maxRows) : rows;
     if (truncated) log.debug({ dialect, total: rows.length, maxRows }, "SQL 查询结果被截断");
-    return { rows: kept.map((r) => normalizeValue(r)), rowCount: rows.length, truncated, maxRows };
-  }
-
-  async listTables(dialect: SqlDialect, connectionString: string, keyword?: string): Promise<unknown[]> {
-    try {
-      return await Dialects[dialect].listTables(connectionString, keyword);
-    } catch (err) {
-      throw new SqlError(this.failMessage(err));
-    }
-  }
-
-  async describeTable(dialect: SqlDialect, connectionString: string, table: string): Promise<unknown[]> {
-    try {
-      return await Dialects[dialect].describe(connectionString, table);
-    } catch (err) {
-      throw new SqlError(this.failMessage(err));
-    }
+    return { rows: kept, rowCount: rows.length, truncated, maxRows };
   }
 
   /** 校验失败原样返回；驱动异常加"查询失败："前缀（同 C# 版 QueryFailed）。 */

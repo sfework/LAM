@@ -16,7 +16,7 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { chatComplete } from "../src/llm/client.js";
-import { getExtractSystemPrompt, formatExtractionPrompt } from "../src/memory/prompts.js";
+import { EXTRACT_SYSTEM_PROMPT, formatExtractionPrompt } from "../src/memory/prompts.js";
 import { parseLlmJsonArray } from "../src/utils/json.js";
 
 // ── CLI 参数 ──────────────────────────────────────────────
@@ -26,7 +26,7 @@ function flag(name, dflt) {
   return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[i + 1] : dflt;
 }
 const URL_ = flag("url", "https://api.agnes-ai.cn/v1");
-const KEY = flag("key", "sk-n3HC09WsgCCS2fXGgcpYKXAwJPrfqiUydFiZzWR2MM4IQPDW");
+const KEY = flag("key", process.env.EXTRACT_TEST_KEY ?? "");
 const MODEL = flag("model", "agnes-3.0-flash");
 const PROJECT = flag("project", "e:/code/lam");
 const LIMIT = Number.parseInt(flag("limit", "10"), 10);
@@ -84,7 +84,7 @@ console.log("─".repeat(60));
 // ── 构造与管线一致的提取请求（全部消息作为 newMessages，无背景）──
 const messages = rows.map((m) => ({ id: m.id, role: m.role, content: m.content, timestamp: m.created_at }));
 const llmMessages = [
-  { role: "system", content: getExtractSystemPrompt(200) },
+  { role: "system", content: EXTRACT_SYSTEM_PROMPT(200) },
   { role: "user", content: formatExtractionPrompt({ newMessages: messages, backgroundMessages: [] }) },
 ];
 

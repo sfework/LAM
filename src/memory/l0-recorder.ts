@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { ChatMessage } from "../gateway/protocol.js";
 import { denoiseMessages, type DenoiseRuleData } from "../denoise/engine.js";
 import { shouldCaptureL0 } from "./sanitize.js";
-import { tokenizeForFts, buildFtsQuery } from "./tokenize.js";
+import { tokenizeForFts } from "./tokenize.js";
 import { newId } from "../infra/id.js";
 import { createLogger } from "../infra/logger.js";
 import type { AssistantAggregate } from "../gateway/forwarder.js";
@@ -117,7 +117,7 @@ export class L0Recorder {
         .prepare("UPDATE sessions SET handled_count = ? WHERE session_key = ?")
         .run(requestMessages.length, sessionKey);
 
-      // 累积调度器状态（阶段 6 的调度器按阈值/idle 从此决定何时触发 L1 提取）
+      // 累积调度器状态（调度器按轮数阈值从此决定何时触发 L1 提取）
       if (insertedIds.length > 0) {
         const ps = this.raw
           .prepare("SELECT id, conversation_count, buffered_message_ids FROM pipeline_state WHERE project_id = ? AND session_key = ?")
@@ -130,7 +130,7 @@ export class L0Recorder {
         } else {
           this.raw
             .prepare(
-              "INSERT INTO pipeline_state (id, project_id, session_key, conversation_count, warmup_threshold, buffered_message_ids) VALUES (?,?,?,?,0,?)",
+              "INSERT INTO pipeline_state (id, project_id, session_key, conversation_count, buffered_message_ids) VALUES (?,?,?,?,?)",
             )
             .run(newId("ps"), projectId, sessionKey, 1, JSON.stringify(insertedIds));
         }
@@ -146,50 +146,6 @@ export class L0Recorder {
       log.warn({ err: String(err), sessionKey }, "L0 回流失败（已回滚）");
       return [];
     }
-  }
-
-  /** BM25 检索 L0 原文（conversation_search 工具用）。 */
-  search(projectId: string, query: string, limit: number): { row: L0Row; score: number }[] {
-    if (!this.ftsAvailable) return [];
-    const match = buildFtsQuery(query);
-    if (!match) return [];
-    const rows = this.raw
-      .prepare(
-        `SELECT m.*, bm25(mem_l0_fts) AS rank
-         FROM mem_l0_fts f
-         JOIN mem_l0 m ON m.id = f.l0_id
-         WHERE mem_l0_fts MATCH ? AND f.project_id = ? AND m.deleted_at IS NULL
-         ORDER BY rank LIMIT ?`,
-      )
-      .all(match, projectId, limit) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      row: {
-        id: r.id as string,
-        projectId: r.project_id as string,
-        sessionKey: r.session_key as string,
-        turnSeq: r.turn_seq as number,
-        role: r.role as "user" | "assistant",
-        content: r.content as string,
-        createdAt: r.created_at as number,
-      },
-      score: -Number(r.rank),
-    }));
-  }
-
-  /** 按 id 批量取 L0（L1 溯源回查用）。 */
-  getByIds(ids: string[]): L0Row[] {
-    if (!ids.length) return [];
-    const ph = ids.map(() => "?").join(",");
-    const rows = this.raw.prepare(`SELECT * FROM mem_l0 WHERE id IN (${ph}) AND deleted_at IS NULL`).all(...ids) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      id: r.id as string,
-      projectId: r.project_id as string,
-      sessionKey: r.session_key as string,
-      turnSeq: r.turn_seq as number,
-      role: r.role as "user" | "assistant",
-      content: r.content as string,
-      createdAt: r.created_at as number,
-    }));
   }
 
   /**
@@ -216,7 +172,7 @@ export class L0Recorder {
 
   /**
    * 管理端单条删除 = 物理删除（DESIGN 决策 56）：删 mem_l0 行 + 移出 FTS。
-   * L1 的 sourceL0Ids 溯源保留（getByIds 查不到即不显示）。
+   * L1 的 sourceL0Ids 溯源保留（查不到即不显示）。
    * （项目级联软删走 ProjectRepo，另行处理，与此不同。）
    */
   remove(id: string): boolean {

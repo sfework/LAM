@@ -155,29 +155,6 @@ describe("SqlService（SQLite 端到端）", () => {
     }
   });
 
-  it("listTables 列表/视图，支持关键字过滤", async () => {
-    const all = await svc.listTables("sqlite", file);
-    expect(all.map((t) => (t as { name: string }).name)).toEqual(["users", "v_users"]);
-    const filtered = await svc.listTables("sqlite", file, "v_");
-    expect(filtered).toEqual([{ name: "v_users", type: "view" }]);
-  });
-
-  it("describeTable 返回列结构与主键标记", async () => {
-    const cols = (await svc.describeTable("sqlite", file, "users")) as {
-      name: string;
-      type: string;
-      nullable: boolean;
-      primaryKey: boolean;
-    }[];
-    expect(cols.map((c) => c.name)).toEqual(["id", "name", "score", "created_at"]);
-    expect(cols[0]).toMatchObject({ name: "id", type: "INTEGER", nullable: true, primaryKey: true });
-    expect(cols[1]).toMatchObject({ name: "name", nullable: false, primaryKey: false });
-  });
-
-  it("非法表名被拒", async () => {
-    await expect(svc.describeTable("sqlite", file, "users; DROP TABLE t")).rejects.toThrow(/非法表名/);
-  });
-
   it("库文件不存在 → 可读错误文案，且不创建文件", async () => {
     const missing = path.join(dir, "missing.db");
     const msg = await new SqlService().query("sqlite", missing, "SELECT 1").then(

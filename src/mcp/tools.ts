@@ -11,7 +11,7 @@ export interface ToolDef {
   inputSchema: Record<string, unknown>;
   /** 转发目标：内部 API 路径。 */
   endpoint: string;
-  /** 是否计入"每轮检索 3 次"限流（memory_search / conversation_search）。 */
+  /** 是否计入"每轮检索 3 次"限流（memory_search）。 */
   searchFamily?: boolean;
 }
 
@@ -28,7 +28,7 @@ const SQL_DIALECTS: { key: string; label: string; conn: string }[] = [
   { key: "sqlserver", label: "SQL Server", conn: "Server=host,1433;Database=db;User Id=sa;Password=...;TrustServerCertificate=True;" },
 ];
 
-/** 生成 12 个 SQL 工具定义（每方言三个），端点按方言走路径段。
+/** 生成 4 个 SQL 工具定义（每方言一个），端点按方言走路径段。
  * 注意：knowledge/agent 的 list 工具已移除（决策 70）——清单已注入系统提示，模型按 id 直接 read 即可；
  * internal 的 knowledge/agents list 端点保留（供管理台与 simulate-usage 脚本使用）。
  * （技能 skill 资产与 skill_read 工具已随功能整体移除。） */
@@ -50,34 +50,6 @@ function sqlToolDefs(): ToolDef[] {
         additionalProperties: false,
       },
       endpoint: `/internal/sql/${d.key}/query`,
-    });
-    defs.push({
-      name: `sql_list_tables_${d.key}`,
-      description: `列出 ${d.label} 库中的表与视图（可按名称关键字模糊过滤）。写 SQL 前先用它了解有哪些表。`,
-      inputSchema: {
-        type: "object",
-        properties: {
-          connection_string: connProp,
-          keyword: { type: "string", description: "表名模糊过滤关键字（可选）。" },
-        },
-        required: ["connection_string"],
-        additionalProperties: false,
-      },
-      endpoint: `/internal/sql/${d.key}/tables`,
-    });
-    defs.push({
-      name: `sql_describe_table_${d.key}`,
-      description: `查看 ${d.label} 指定表的列结构（列名/类型/是否可空/默认值/主键）。`,
-      inputSchema: {
-        type: "object",
-        properties: {
-          connection_string: connProp,
-          table: { type: "string", description: "表名（可带 schema 前缀，如 public.users）。" },
-        },
-        required: ["connection_string", "table"],
-        additionalProperties: false,
-      },
-      endpoint: `/internal/sql/${d.key}/describe`,
     });
   }
   return defs;
@@ -199,7 +171,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     name: "memory_search",
-    description: "检索项目结构化记忆（L1，原子事实/偏好/决策/方法）。返回 id 与内容摘要，配合 memory_batch_read 取原文溯源。与 conversation_search 每轮合计最多调用 3 次。",
+    description: "检索项目结构化记忆（L1，原子事实/偏好/决策/方法）。返回 id 与内容摘要，配合 memory_batch_read 取原文溯源。每轮最多调用 3 次（防检索死循环）。",
     inputSchema: {
       type: "object",
       properties: {
@@ -232,7 +204,7 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "memory_batch_update",
     description:
-      "批量改写项目结构化记忆正文（仅 update，不含删除；删除请用 memory_batch_delete），用于 Agent 主动修正错述、合并改写。items 单批最多 20 条，每条 content 必填且 ≤2000 字符。逐条返回结果，单条失败不影响其余。不计入检索限流。【使用红线】写操作：除非用户明确要求整理/维护记忆，否则禁止自行调用。",
+      "批量改写项目结构化记忆正文（仅 update，不含删除；删除请用 memory_batch_delete），用于 Agent 主动修正错述、合并改写。items 单批最多 20 条，每条 content 必填且 ≤2000 字符。逐条返回结果，单条失败不影响其余。不计入检索限流。【使用红线】写操作：允许修正本轮召回块（<recalled>）中确认有误/过时的条目；其余场景除非用户明确要求整理/维护记忆，否则禁止自行调用。",
     inputSchema: {
       type: "object",
       properties: {
@@ -259,7 +231,7 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "memory_batch_delete",
     description:
-      "批量物理删除项目结构化记忆（不可恢复），用于清理过时、错误或已确认对当前项目无用的条目。ids 单批数量不限，逐条校验有效性与项目归属；为控制上下文体积，成功只返回计数（applied），失败才逐条返回原因。不计入检索限流。【使用红线】写操作：除非用户明确要求删除/维护记忆，否则禁止自行调用。",
+      "批量物理删除项目结构化记忆（不可恢复），用于清理过时、错误或已确认对当前项目无用的条目。ids 单批数量不限，逐条校验有效性与项目归属；为控制上下文体积，成功只返回计数（applied），失败才逐条返回原因。不计入检索限流。【使用红线】写操作：允许删除本轮召回块（<recalled>）中确认已失效的条目（须先反证）；其余场景除非用户明确要求删除/维护记忆，否则禁止自行调用。",
     inputSchema: {
       type: "object",
       properties: {
@@ -302,24 +274,7 @@ export const TOOL_DEFS: ToolDef[] = [
     },
     endpoint: "/internal/memory/save-profile",
   },
-  {
-    name: "conversation_search",
-    description: "检索项目原始对话记录（L0），用于查找具体消息原文、时间线，或校验/补全 memory_search 结果。与 memory_search 每轮合计最多调用 3 次。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        project_path: PROJECT_PATH_PROP,
-        query: { type: "string" },
-        limit: { type: "number", description: "返回条数上限（可选）。" },
-      },
-      required: ["project_path", "query"],
-      additionalProperties: false,
-    },
-    endpoint: "/internal/conversation/search",
-    searchFamily: true,
-  },
-
-  // ── SQL 只读查询（四方言 × query / list_tables / describe_table；不依赖 project_path，不计入检索限流）──
+  // ── SQL 只读查询（四方言 × query；不依赖 project_path，不计入检索限流）──
   ...sqlToolDefs(),
 ];
 

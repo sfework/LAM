@@ -1,6 +1,5 @@
 import type { AssetsRepo } from "../assets/repo.js";
-import { clipList } from "../assets/repo.js";
-import type { SettingsService } from "../settings/service.js";
+import { mergeContentText } from "../utils/content.js";
 
 /**
  * 注入快照生成器（DESIGN §2.6）。
@@ -26,11 +25,9 @@ export interface SnapshotInput {
 
 export class SnapshotBuilder {
   private readonly assets: AssetsRepo;
-  private readonly settings: SettingsService;
 
-  constructor(assets: AssetsRepo, settings: SettingsService) {
+  constructor(assets: AssetsRepo) {
     this.assets = assets;
-    this.settings = settings;
   }
 
   build(input: SnapshotInput): string {
@@ -42,27 +39,18 @@ export class SnapshotBuilder {
       sections.push(`<prompts>\n${prompt.content.trim()}\n</prompts>`);
     }
 
-    // 资产清单
+    // 资产清单（knowledge/agents 均不设注入上限，全量注入；决策：取消 inject_*_max_* 限制）
     const lists = this.assets.enabledAssetLists(input.projectId);
-    const kn = clipList(
-      lists.knowledge,
-      this.settings.getInt("inject_knowledge_max_items"),
-      this.settings.getInt("inject_knowledge_max_chars"),
-    );
+    const kn = lists.knowledge;
     if (kn.length) sections.push(`<knowledge>\n${renderList(kn)}\n</knowledge>`);
 
-    const ag = clipList(
-      lists.agents,
-      this.settings.getInt("inject_agents_max_items"),
-      this.settings.getInt("inject_agents_max_chars"),
-    );
+    const ag = lists.agents;
     if (ag.length) sections.push(`<agents>\n${renderList(ag)}\n</agents>`);
 
-    // <memory>
+    // <memory>（L2 画像全文注入，不设字符上限；长度约束归凝练管线的 l2_max_chars）
     const mem = input.memoryProfile?.trim();
     if (mem) {
-      const cap = this.settings.getInt("inject_memory_max_chars");
-      sections.push(`<memory>\n${mem.length > cap ? mem.slice(0, cap) : mem}\n</memory>`);
+      sections.push(`<memory>\n${mem}\n</memory>`);
     }
 
     // <project>
@@ -91,17 +79,9 @@ export function injectSnapshot<T extends { role: string; content?: unknown }>(
   const idx = messages.findIndex((m) => m.role === "system");
   if (idx >= 0) {
     const sys = messages[idx]!;
-    const merged = appendToContent(sys.content, snapshot);
+    const merged = mergeContentText(sys.content, snapshot, false);
     return messages.map((m, i) => (i === idx ? { ...m, content: merged } : m));
   }
   const injected = { role: "system", content: snapshot } as unknown as T;
   return [injected, ...messages.map((m) => ({ ...m }))];
-}
-
-/** 追加文本到 content（string 直接拼；块数组在末尾补一个 text 块）。 */
-function appendToContent(content: unknown, text: string): unknown {
-  if (content === undefined || content === null || content === "") return text;
-  if (typeof content === "string") return `${content}\n\n${text}`;
-  if (Array.isArray(content)) return [...content, { type: "text", text }];
-  return content;
 }

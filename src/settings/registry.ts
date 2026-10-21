@@ -32,48 +32,26 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   { key: "memory_llm", type: MODEL_REF, modelCategory: "llm", defaultValue: "", description: "记忆维护（L1/L2 提取归纳）用 LLM" },
   { key: "embedding_model", type: MODEL_REF, modelCategory: "embedding", defaultValue: "", description: "向量化模型（维度固定 1024）" },
 
-  // ── 注入预算（按类型独立，超限按 sort_order 取 top）──
-  { key: "inject_knowledge_max_items", type: "int", defaultValue: "20", min: 0, max: 500, description: "知识清单注入条数上限" },
-  { key: "inject_knowledge_max_chars", type: "int", defaultValue: "2000", min: 0, max: 20000, description: "知识清单注入字符上限" },
-  { key: "inject_agents_max_items", type: "int", defaultValue: "20", min: 0, max: 500, description: "Agents 清单条数上限" },
-  { key: "inject_agents_max_chars", type: "int", defaultValue: "2000", min: 0, max: 20000, description: "Agents 清单字符上限" },
-  { key: "inject_memory_max_chars", type: "int", defaultValue: "2000", min: 0, max: 20000, description: "L2 项目画像全文注入字符上限" },
+  // ── 注入预算（资产清单与 L2 画像均不设上限全量注入；决策：取消 inject_*_max_* 限制）──
 
   // ── L1 条目与召回 ──
-  { key: "l1_max_chars", type: "int", defaultValue: "200", min: 20, max: 2000, description: "单条 L1 字符上限，提取时强制拆分" },
-  { key: "l1_recall_enabled", type: "bool", defaultValue: "true", description: "每轮 L1 动态召回开关" },
+  { key: "l1_max_chars", type: "int", defaultValue: "2000", min: 20, max: 2000, description: "单条 L1 字符上限（注入提取提示词约束 LLM 拆分超长记忆）" },
   { key: "l1_recall_query_turns", type: "int", defaultValue: "3", min: 1, max: 10, description: "召回检索词拼接最近 N 条 user 消息（assistant 不参与，防记忆复述污染检索词）" },
-  { key: "l1_recall_top_k", type: "int", defaultValue: "5", min: 1, max: 50, description: "每轮召回条数上限" },
-  { key: "l1_recall_max_chars", type: "int", defaultValue: "1500", min: 0, max: 20000, description: "召回块字符上限" },
-  { key: "l1_recall_max_chars_per_item", type: "int", defaultValue: "200", min: 0, max: 2000, description: "单条召回行字符上限，超长截断保留头部（0=不限制）" },
+  { key: "l1_recall_top_k", type: "int", defaultValue: "10", min: 1, max: 50, description: "每轮召回条数上限" },
   { key: "recall_timeout_ms", type: "int", defaultValue: "5000", min: 500, max: 30000, description: "召回超时，超时降级空召回不阻塞转发" },
   { key: "l1_recall_similarity_min", type: "float", defaultValue: "0.3", min: 0, max: 1, description: "向量命中的余弦相似度下限（1-distance），低于此丢弃；与文档集大小无关，可靠过滤噪音召回" },
 
   // ── 提取调度 ──
-  { key: "l1_trigger_conversations", type: "int", defaultValue: "5", min: 1, max: 100, description: "触发 L1 提取的累积轮数" },
-  { key: "l1_warmup_enabled", type: "bool", defaultValue: "true", description: "warm-up 模式（阈值 1→2→4→8→上限）" },
-  { key: "l1_idle_seconds", type: "int", defaultValue: "60", min: 5, max: 3600, description: "会话空闲兜底提取" },
+  { key: "l1_trigger_conversations", type: "int", defaultValue: "5", min: 1, max: 100, description: "触发 L1 提取的累积轮数（唯一触发路径）" },
   { key: "extract_max_new_messages", type: "int", defaultValue: "10", min: 1, max: 100, description: "单次提取新消息上限" },
   { key: "extract_max_bg_messages", type: "int", defaultValue: "5", min: 0, max: 50, description: "单次提取背景消息上限" },
   { key: "extract_min_priority", type: "int", defaultValue: "60", min: 0, max: 100, description: "低于此优先级的提取结果丢弃" },
   { key: "conflict_recall_top_k", type: "int", defaultValue: "5", min: 1, max: 50, description: "冲突检测候选召回条数" },
-  { key: "extract_max_attempts", type: "int", defaultValue: "3", min: 1, max: 10, description: "提取任务最大重试次数" },
   { key: "l2_delay_seconds", type: "int", defaultValue: "120", min: 0, max: 3600, description: "L1 完成后延迟触发 L2 凝练" },
-  { key: "l2_max_interval_hours", type: "int", defaultValue: "24", min: 1, max: 720, description: "L2 画像凝练最大间隔" },
   { key: "l2_max_chars", type: "int", defaultValue: "2000", min: 200, max: 20000, description: "项目画像字符上限" },
 
-  // ── 过期记忆维护（DESIGN 决策 76：调度器清扫 + LLM 评审 delete/rewrite/keep）──
-  { key: "memory_expiry_enabled", type: "bool", defaultValue: "true", description: "过期记忆清扫总闸（关掉则调度器不做过期评审）" },
-  { key: "memory_expiry_days_episodic", type: "int", defaultValue: "30", min: 0, max: 3650, description: "episodic 类记忆超龄 N 天进入过期评审候选（0=永不过期）" },
-  { key: "memory_expiry_days_artifact", type: "int", defaultValue: "90", min: 0, max: 3650, description: "artifact 类记忆超龄 N 天进入候选（0=永不过期）" },
-  { key: "memory_expiry_days_other", type: "int", defaultValue: "0", min: 0, max: 3650, description: "其余类型（fact/method/instruction/persona）超龄 N 天进入候选（默认 0=永不过期，语义过期交给冲突检测）" },
-  { key: "memory_expiry_interval_hours", type: "int", defaultValue: "24", min: 1, max: 8760, description: "过期清扫最小间隔（小时），调度器每 tick 检查节流" },
-  { key: "memory_expiry_max_items", type: "int", defaultValue: "20", min: 1, max: 200, description: "单轮每项目评审条数上限（最老优先，成本可控）" },
-
   // ── 其他 ──
-  { key: "extraction_enabled", type: "bool", defaultValue: "true", description: "写侧提取总闸（关掉只停提取不停注入召回）" },
   { key: "memory_extract_max_items", type: "int", defaultValue: "10", min: 1, max: 100, description: "单批 L1 提取条数上限" },
-  { key: "memory_similarity_threshold", type: "float", defaultValue: "0.82", min: 0, max: 1, description: "冲突检测候选召回的相关度下限" },
   { key: "session_ttl_minutes", type: "int", defaultValue: "120", min: 1, max: 10080, description: "会话快照 TTL，超时同 key 重建" },
 
   // ── SQL 查询工具（MCP sql_query_*，只读）──
@@ -109,8 +87,6 @@ export function validateSettingValue(def: SettingDef, raw: string): string | nul
     }
     case "string":
     case "modelRef":
-      return null;
-    default:
       return null;
   }
 }

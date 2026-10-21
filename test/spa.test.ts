@@ -60,15 +60,23 @@ function makeApp(spaDistDir?: string) {
   const denoise = new DenoiseRepo(raw);
   const assets = new AssetsRepo(raw);
   const sessions = new SessionRepo(raw);
-  const snapshot = new SnapshotBuilder(assets, settings);
+  const snapshot = new SnapshotBuilder(assets);
   const l0 = new L0Recorder(raw, true);
   const l1Store = new L1Store(raw, true, false);
   const l2 = new L2Refiner(raw, l1Store, settings);
   const recaller = new MemoryRecaller(l1Store, settings);
   const deps: AppDeps = {
     api: { models, settings, projects, denoise, assets, l0, l1: l1Store, l2 },
-    gateway: { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller },
-    internal: { projects, assets, l1: l1Store, l0, l2, recaller, settings, sql: new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") }) },
+    gateway: { projects, denoise, settings, sessions, snapshot, l0, l2, recaller },
+    internal: {
+      projects,
+      assets,
+      l1: l1Store,
+      l2,
+      recaller,
+      settings,
+      sql: new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") }),
+    },
     spaDistDir: spaDistDir ?? tmpDist,
   };
   return { app: createApp(deps), settings };

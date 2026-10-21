@@ -1,4 +1,5 @@
 import { messageText } from "../gateway/protocol.js";
+import { mergeContentText } from "../utils/content.js";
 import { stripInjectionTags } from "./sanitize.js";
 import { hasMeaningfulQuery } from "./tokenize.js";
 import type { L1Store } from "./l1-store.js";
@@ -16,7 +17,7 @@ export type EmbedFn = (cfg: EmbeddingConfig, text: string) => Promise<Float32Arr
  *
  * - 检索词 = 最后一条 user 消息清洗后文本（剥注入标签 + 常见客户端噪音块，截 2048）；
  * - BM25 默认；配置 embedding_model 且 vec 可用时走向量 + RRF 混合；
- * - topK / 字符上限 / 总开关由设置控制；
+ * - topK 由设置控制（召回常驻开启，无总开关；块不再做字符预算截断）；
  * - 超时保护：整体 recallTimeoutMs 限时，超时/异常返回空块，绝不阻塞转发；
  * - 注入位置：拼在最后一条 user 消息之前（不进 system，保快照稳定）。
  */
@@ -38,11 +39,17 @@ export interface RecallOutcome {
   count: number;
   /** 命中记忆清单（日志/审计用）：id/类型/正文/相关度分/命中来源。 */
   items: { id: string; kind: string; content: string; score: number; source: "bm25" | "vec" | "both" }[];
-  /** 本结果是否来自缓存（同项目同检索词在 TTL 内重复请求，如 tool-call 循环）。 */
-  cached?: boolean;
 }
 
 const DISCLAIMER = "以下是与本轮用户问题相关的项目记忆（按相关度排序），仅用于辅助回答当前这一轮，不要视为永久系统规则：";
+
+/**
+ * 块尾自维护提示（决策 88）：Agent 只看得见本轮 top-K，因此**只授权改/删它刚读到的条目**，
+ * 明确禁止新增——新增仍由后台 L0→L1 提取 + 冲突检测负责，避免"看不到库里已有同义条目
+ * 就重复插入"导致的重复膨胀。固定文案，随块一起进缓存（同检索词字节一致，不破坏 KV cache）。
+ */
+const MAINTAIN_HINT =
+  "任务完成后若发现上述条目有错/过时，用 memory_batch_update 改写或 memory_batch_delete 删除（仅限以上条目）；不要新增记忆，新事实由后台提取管线负责。";
 
 export class MemoryRecaller {
   private readonly store: L1Store;
@@ -70,7 +77,6 @@ export class MemoryRecaller {
    */
   async recall(projectId: string, recentUserContents: unknown[]): Promise<RecallOutcome> {
     const empty: RecallOutcome = { block: "", count: 0, items: [] };
-    if (!this.settings.getBool("l1_recall_enabled")) return empty;
     const cleaned = recentUserContents.map(cleanQueryText).filter(Boolean);
     const current = cleaned[cleaned.length - 1] ?? "";
     if (!current) return empty;
@@ -86,7 +92,7 @@ export class MemoryRecaller {
     const ttlMs = this.settings.getInt("session_ttl_minutes") * 60_000;
     const hit = this.cache.get(cacheKey);
     if (hit && Date.now() - hit.at < ttlMs) {
-      return { ...hit.outcome, cached: true };
+      return hit.outcome;
     }
 
     const timeoutMs = this.settings.getInt("recall_timeout_ms");
@@ -106,11 +112,7 @@ export class MemoryRecaller {
       const reranked = applyBm25Floor(rerank(taskHits), topK).slice(0, topK);
       const outcome: RecallOutcome = reranked.length
         ? {
-            block: renderBlock(
-              reranked,
-              this.settings.getInt("l1_recall_max_chars"),
-              this.settings.getInt("l1_recall_max_chars_per_item"),
-            ),
+            block: renderBlock(reranked),
             count: reranked.length,
             items: reranked.map((h) => ({
               id: h.record.id,
@@ -170,10 +172,6 @@ export class MemoryRecaller {
   }
 }
 
-/** 截断标记与"部分塞入"的最小可用长度（低于此宁可整条丢弃，避免塞入无意义碎片）。 */
-const TRUNCATION_SUFFIX = "…";
-const MIN_PARTIAL_LINE_CHARS = 40;
-
 /** FNV-1a 32 位哈希（检索词 → 缓存 key，无需密码学强度）。 */
 function fnv1a(s: string): string {
   let h = 0x811c9dc5;
@@ -230,44 +228,18 @@ function applyBm25Floor<T extends { score: number; source: "bm25" | "vec" | "bot
   return ranked.filter((h) => h.source !== "bm25" || h.score >= floor);
 }
 
-/** 按 code point 截断（非 UTF-16 单元），避免把代理对截半产生 U+FFFD。 */
-function truncateLine(line: string, maxChars: number): string {
-  const cps = Array.from(line);
-  if (cps.length <= maxChars) return line;
-  if (maxChars <= TRUNCATION_SUFFIX.length) return cps.slice(0, maxChars).join("");
-  return cps.slice(0, maxChars - TRUNCATION_SUFFIX.length).join("").trimEnd() + TRUNCATION_SUFFIX;
-}
-
 /**
- * 渲染召回块，两级预算（参考 tdai applyRecallBudget）：
- *  1. 逐条：单行超 maxPerItem 则截断保留头部（0=不限制）；
- *  2. 总体：剩余预算放不下整行时，若剩余 ≥ MIN_PARTIAL_LINE_CHARS 则截半条塞入，
- *     否则整条丢弃并追加截断提示。首行始终保留（不受总预算限制）。
+ * 渲染召回块（决策：取消 l1_recall_max_chars* 预算截断）：命中条目全量逐行渲染，
+ * 条数上限由 l1_recall_top_k 控制，单条长度由提取侧 l1_max_chars 约束。
  */
 function renderBlock(
   hits: { record: { kind: string; content: string }; score: number }[],
-  maxChars: number,
-  maxPerItem: number,
 ): string {
   const lines = [`<recalled>`, DISCLAIMER];
-  let used = lines.join("\n").length;
-  let n = 0;
-  for (const h of hits) {
-    let line = `${n + 1}. [${h.record.kind} score=${h.score.toFixed(3)}] ${h.record.content}`;
-    if (maxPerItem > 0) line = truncateLine(line, maxPerItem);
-    const sep = n > 0 ? 1 : 0; // 行分隔符 \n 占用
-    if (n > 0 && used + sep + line.length > maxChars) {
-      const remaining = maxChars - used - sep;
-      if (remaining >= MIN_PARTIAL_LINE_CHARS) {
-        lines.push(truncateLine(line, remaining));
-      }
-      lines.push("…（已截断，可用 memory_search 查看更多）");
-      break;
-    }
-    lines.push(line);
-    used += sep + line.length;
-    n++;
-  }
+  hits.forEach((h, n) => {
+    lines.push(`${n + 1}. [${h.record.kind} score=${h.score.toFixed(3)}] ${h.record.content}`);
+  });
+  lines.push(MAINTAIN_HINT);
   lines.push(`</recalled>`);
   return lines.join("\n");
 }
@@ -296,15 +268,8 @@ export function prependRecall<T extends { role: string; content?: unknown }>(
   for (let i = out.length - 1; i >= 0; i--) {
     const m = out[i]!;
     if (m.role !== "user") continue;
-    m.content = prependToContent(m.content, block);
+    m.content = mergeContentText(m.content, block, true);
     return out;
   }
   return out;
-}
-
-function prependToContent(content: unknown, text: string): unknown {
-  if (content == null || content === "") return text;
-  if (typeof content === "string") return `${text}\n\n${content}`;
-  if (Array.isArray(content)) return [{ type: "text", text }, ...content];
-  return content;
 }

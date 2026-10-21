@@ -14,7 +14,7 @@
  *
  * 用法：
  *   node scripts/simulate-usage.mjs [--base http://localhost:8790] [--wait 420] [--project <路径>]
- *     --wait     等待 L1/L2 管线的最长秒数（真实 LLM + idle 60s + L2 延迟 120s，默认 420）
+ *     --wait     等待 L1/L2 管线的最长秒数（真实 LLM + 轮数阈值触发 + L2 延迟 120s，默认 420）
  *     --project  被测项目绝对路径（需已在网关登记且服务可访问；默认本仓库根目录）
  *
  * 归因：所有测试数据带一次性后缀 SUF（标记词「沧溟<6位>」、提示词签名、资产描述代号、
@@ -158,12 +158,10 @@ await check("health：服务在线", async () => {
   assert(res.status === 200 && b.ok, `HTTP ${res.status}`);
   return `fts5=${b.fts5} vec=${b.vec} time=${b.time}`;
 });
-await check("预检：三模型绑定 + 提取/召回开启", async () => {
+await check("预检：三模型绑定", async () => {
   const list = (await api("settings/list", { page: 1, pageSize: 100 })).list;
   const get = (k) => list.find((x) => x.key === k)?.value;
   assert(get("gateway_llm") && get("memory_llm") && get("embedding_model"), "模型未全部绑定");
-  assert(get("extraction_enabled") === "true", "extraction_enabled=false，写侧停摆");
-  assert(get("l1_recall_enabled") === "true", "l1_recall_enabled=false，读侧停摆");
   return `memory_llm=${get("memory_llm")} embedding=${get("embedding_model")}`;
 });
 let projectId = null;
@@ -280,7 +278,7 @@ await check("<knowledge>/<agents> 清单生效：两个代号可读回", async (
 });
 
 console.log("\n▶ 阶段 5：L1 提取 + 自动召回质量（真实 memory_llm，调度器真实节律）");
-// 关键教训（首跑）：warm-up 分批提取（阈值 1→2→4 + idle 60s 兜底），首批往往只有代号类记忆，
+// 关键教训（首跑）：分批提取（阈值 3 轮触发），首批往往只有代号类记忆，
 // 主题事实要等后续批次。质量断言前必须等探针事实全部落库，否则测的是"还没提取出来的东西"。
 const FACT_PROBES = [/1024/, /pnpm/i, /itemKey|TabPane/, /物理删|软删/, /PaginationModel|POST/];
 await check("L1 提取稳定（等全部主题事实落库）", async () => {

@@ -21,8 +21,6 @@ function groupOf(endpoint: string): string {
       return "Agents";
     case "memory":
       return "记忆";
-    case "conversation":
-      return "对话";
     case "sql":
       return "SQL";
     default:

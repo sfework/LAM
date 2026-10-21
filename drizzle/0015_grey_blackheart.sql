@@ -1,0 +1,1 @@
+ALTER TABLE `pipeline_state` DROP COLUMN `warmup_threshold`;

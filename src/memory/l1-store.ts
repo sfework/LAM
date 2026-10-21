@@ -222,17 +222,6 @@ export class L1Store {
   }
 
   /**
-   * 仅更新 metadata JSON 与 updated_at（过期评审 keep 续期锚点用，DESIGN 决策 76）。
-   * 不动正文 → FTS/向量无需变更。行不存在返回 false。
-   */
-  patchMetadata(id: string, metadata: string): boolean {
-    const res = this.raw
-      .prepare("UPDATE mem_l1 SET metadata = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
-      .run(metadata, Date.now(), id);
-    return Number(res.changes) > 0;
-  }
-
-  /**
    * 冲突决策落库：
    *  - store：直接 insert；
    *  - update/merge：insert 新条目 + 把 target_ids 置 superseded_by=新 id；

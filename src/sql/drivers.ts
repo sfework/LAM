@@ -1,7 +1,7 @@
 /**
  * SQL 工具的方言驱动层（移植自参考实现的 SqlTools.cs 四库支持）。
  *
- * 每个方言暴露三个操作：query / listTables / describeTable，返回行对象数组。
+ * 每个方言暴露 query 操作，返回行对象数组（表结构元数据查询已随工具下线，模型可按需 SELECT 系统表）。
  * 驱动全部**懒加载**（dynamic import）：mssql/tedious 体积大，只在真正调用对应工具时才加载。
  *
  * 连接串口径与 C#/ADO.NET 客户端一致，便于复用既有连接串：
@@ -15,29 +15,12 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import type { config as MssqlConfig } from "mssql";
 import { localDateTimeStr } from "../infra/localtime.js";
-import { SqlGuardError, assertSafeIdentifier } from "./guard.js";
+import { SqlGuardError } from "./guard.js";
 
 export type SqlDialect = "sqlite" | "postgresql" | "mysql" | "sqlserver";
 
 /** 行集：列名 → 归一化后的 JSON 安全值。 */
 export type SqlRows = Record<string, unknown>[];
-
-export interface TableInfo {
-  name: string;
-  /** 表/视图（有的方言附带 schema）。 */
-  type: string;
-  schema?: string;
-}
-
-export interface ColumnInfo {
-  name: string;
-  type: string;
-  nullable: boolean;
-  defaultValue: unknown;
-  /** 主键（能取到时给出）。 */
-  primaryKey?: boolean;
-  comment?: string;
-}
 
 /** 安全整数范围外的大整数转字符串，避免 JSON 精度丢失。 */
 const MAX_SAFE_BIG = BigInt(Number.MAX_SAFE_INTEGER);
@@ -204,42 +187,6 @@ async function sqliteQuery(connectionString: string, sql: string): Promise<SqlRo
   }
 }
 
-async function sqliteListTables(connectionString: string, keyword?: string): Promise<TableInfo[]> {
-  const db = openSqliteReadonly(connectionString);
-  try {
-    const like = `%${keyword ?? ""}%`;
-    const rows = sqliteAll(
-      db,
-      `SELECT name, type FROM sqlite_master
-        WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' AND lower(name) LIKE lower(?)
-        ORDER BY type, name`,
-      [like],
-    );
-    return rows.map((r) => ({ name: String(r.name), type: String(r.type) }));
-  } finally {
-    db.close();
-  }
-}
-
-async function sqliteDescribe(connectionString: string, table: string): Promise<ColumnInfo[]> {
-  const name = assertSafeIdentifier(table, "表名");
-  const bare = name.split(".").pop()!;
-  const db = openSqliteReadonly(connectionString);
-  try {
-    const cols = sqliteAll(db, `PRAGMA table_info(${JSON.stringify(bare)})`);
-    const pk = new Set(cols.filter((c) => Number(c.pk) > 0).map((c) => String(c.name)));
-    return cols.map((c) => ({
-      name: String(c.name),
-      type: String(c.type ?? ""),
-      nullable: Number(c.notnull) === 0,
-      defaultValue: c.dflt_value ?? null,
-      primaryKey: pk.has(String(c.name)),
-    }));
-  } finally {
-    db.close();
-  }
-}
-
 // ─────────── PostgreSQL ───────────
 
 async function pgClient(connectionString: string, sql: string, params: unknown[] = []) {
@@ -256,45 +203,6 @@ async function pgClient(connectionString: string, sql: string, params: unknown[]
 
 async function pgQuery(connectionString: string, sql: string): Promise<SqlRows> {
   return normalizeRows(await pgClient(connectionString, sql));
-}
-
-async function pgListTables(connectionString: string, keyword?: string): Promise<TableInfo[]> {
-  const like = `%${keyword ?? ""}%`;
-  const rows = await pgClient(
-    connectionString,
-    `SELECT table_schema AS schema, table_name AS name, table_type AS type
-       FROM information_schema.tables
-      WHERE table_schema NOT IN ('pg_catalog','information_schema') AND lower(table_name) LIKE lower($1)
-      ORDER BY table_schema, table_name`,
-    [like],
-  );
-  return rows.map((r) => ({ name: String(r.name), type: String(r.type), schema: String(r.schema) }));
-}
-
-async function pgDescribe(connectionString: string, table: string): Promise<ColumnInfo[]> {
-  const name = assertSafeIdentifier(table, "表名");
-  const [schema, bare] = name.includes(".") ? [name.split(".")[0]!, name.split(".").pop()!] : ["public", name];
-  const rows = await pgClient(
-    connectionString,
-    `SELECT c.column_name AS name, c.data_type AS type, c.is_nullable AS nullable, c.column_default AS "defaultValue",
-            c.ordinal_position AS pos,
-            (SELECT count(*) FROM information_schema.table_constraints tc
-               JOIN information_schema.key_column_usage k
-                 ON k.constraint_name = tc.constraint_name AND k.table_name = tc.table_name
-              WHERE tc.table_schema = c.table_schema AND tc.table_name = c.table_name
-                AND tc.constraint_type = 'PRIMARY KEY' AND k.column_name = c.column_name) AS is_pk
-       FROM information_schema.columns c
-      WHERE c.table_schema = $1 AND c.table_name = $2
-      ORDER BY c.ordinal_position`,
-    [schema, bare],
-  );
-  return rows.map((r) => ({
-    name: String(r.name),
-    type: String(r.type),
-    nullable: r.nullable === "YES",
-    defaultValue: r.defaultValue ?? null,
-    primaryKey: Number(r.is_pk) > 0,
-  }));
 }
 
 // ─────────── MySQL ───────────
@@ -325,57 +233,6 @@ async function mysqlQuery(connectionString: string, sql: string): Promise<SqlRow
   try {
     const [rows] = await conn.query({ sql, timeout: 30_000 }, []);
     return normalizeRows(Array.isArray(rows) ? (rows as Record<string, unknown>[]) : []);
-  } finally {
-    await conn.end().catch(() => undefined);
-  }
-}
-
-async function mysqlListTables(connectionString: string, keyword?: string): Promise<TableInfo[]> {
-  const mysql = await import("mysql2/promise");
-  const conn = await mysql.createConnection(mysqlOptions(connectionString) as never);
-  try {
-    const [rows] = await conn.query(
-      `SELECT table_schema AS \`schema\`, table_name AS name, table_type AS type
-         FROM information_schema.tables
-        WHERE table_schema = DATABASE() AND lower(table_name) LIKE lower(?)
-        ORDER BY table_name`,
-      [`%${keyword ?? ""}%`],
-    );
-    return (rows as Record<string, unknown>[]).map((r) => ({
-      name: String(r.name),
-      type: String(r.type),
-      schema: String(r.schema),
-    }));
-  } finally {
-    await conn.end().catch(() => undefined);
-  }
-}
-
-async function mysqlDescribe(connectionString: string, table: string): Promise<ColumnInfo[]> {
-  const mysql = await import("mysql2/promise");
-  const name = assertSafeIdentifier(table, "表名");
-  const [schema, bare] = name.includes(".") ? [name.split(".")[0]!, name.split(".").pop()!] : [undefined, name];
-  const conn = await mysql.createConnection(mysqlOptions(connectionString) as never);
-  try {
-    const where = schema ? "TABLE_SCHEMA = ? AND TABLE_NAME = ?" : "TABLE_NAME = ?";
-    const params = schema ? [schema, bare] : [bare];
-    const [rows] = await conn.query(
-      `SELECT COLUMN_NAME AS name, DATA_TYPE AS type, IS_NULLABLE AS nullable,
-              COLUMN_DEFAULT AS \`defaultValue\`, COLUMN_KEY AS keyFlag, COLUMN_COMMENT AS comment,
-              ORDINAL_POSITION AS pos
-         FROM information_schema.COLUMNS
-        WHERE ${where}
-        ORDER BY ORDINAL_POSITION`,
-      params,
-    );
-    return (rows as Record<string, unknown>[]).map((r) => ({
-      name: String(r.name),
-      type: String(r.type),
-      nullable: r.nullable === "YES",
-      defaultValue: r.defaultValue ?? null,
-      primaryKey: String(r.keyFlag ?? "") === "PRI",
-      comment: r.comment ? String(r.comment) : undefined,
-    }));
   } finally {
     await conn.end().catch(() => undefined);
   }
@@ -418,75 +275,13 @@ async function mssqlQuery(connectionString: string, sqlText: string): Promise<Sq
   }
 }
 
-async function mssqlListTables(connectionString: string, keyword?: string): Promise<TableInfo[]> {
-  const { sql, pool } = await mssqlPool(connectionString);
-  try {
-    const res = await pool
-      .request()
-      .input("like", sql.NVarChar, `%${keyword ?? ""}%`)
-      .query(
-        `SELECT s.name AS [schema], t.name AS [name], t.type_desc AS [type]
-           FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id
-          WHERE LOWER(t.name) LIKE LOWER(@like)
-          UNION ALL
-          SELECT s.name, v.name, 'VIEW'
-            FROM sys.views v JOIN sys.schemas s ON s.schema_id = v.schema_id
-           WHERE LOWER(v.name) LIKE LOWER(@like)
-          ORDER BY 1, 2`,
-      );
-    return (res.recordset ?? []).map((r) => ({
-      name: String(r.name),
-      type: String(r.type).toLowerCase().includes("view") ? "VIEW" : "BASE TABLE",
-      schema: String(r.schema),
-    }));
-  } finally {
-    await pool.close().catch(() => undefined);
-  }
-}
-
-async function mssqlDescribe(connectionString: string, table: string): Promise<ColumnInfo[]> {
-  const { sql, pool } = await mssqlPool(connectionString);
-  const name = assertSafeIdentifier(table, "表名");
-  const [schema, bare] = name.includes(".") ? [name.split(".")[0]!, name.split(".").pop()!] : ["dbo", name];
-  try {
-    const res = await pool
-      .request()
-      .input("schema", sql.NVarChar, schema)
-      .input("table", sql.NVarChar, bare)
-      .query(
-        `SELECT c.name AS [name], TYPE_NAME(c.user_type_id) AS [type],
-                c.is_nullable AS [nullable], ObjectDefinition(c.default_object_id) AS [defaultValue],
-                c.column_id AS [pos],
-                CASE WHEN EXISTS (
-                  SELECT 1 FROM sys.index_columns ic
-                    JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-                   WHERE ic.object_id = c.object_id AND ic.column_id = c.column_id AND i.is_primary_key = 1
-                ) THEN 1 ELSE 0 END AS [isPk]
-           FROM sys.columns c
-          WHERE c.object_id = OBJECT_ID(QUOTENAME(@schema) + '.' + QUOTENAME(@table))
-          ORDER BY c.column_id`,
-      );
-    return (res.recordset ?? []).map((r) => ({
-      name: String(r.name),
-      type: String(r.type),
-      nullable: Number(r.nullable) === 1,
-      defaultValue: r.defaultValue ?? null,
-      primaryKey: Number(r.isPk) === 1,
-    }));
-  } finally {
-    await pool.close().catch(() => undefined);
-  }
-}
-
 // ─────────── 对外统一入口 ───────────
 
 export const Dialects = {
-  sqlite: { query: sqliteQuery, listTables: sqliteListTables, describe: sqliteDescribe },
-  postgresql: { query: pgQuery, listTables: pgListTables, describe: pgDescribe },
-  mysql: { query: mysqlQuery, listTables: mysqlListTables, describe: mysqlDescribe },
-  sqlserver: { query: mssqlQuery, listTables: mssqlListTables, describe: mssqlDescribe },
+  sqlite: { query: sqliteQuery },
+  postgresql: { query: pgQuery },
+  mysql: { query: mysqlQuery },
+  sqlserver: { query: mssqlQuery },
 } satisfies Record<SqlDialect, {
   query: (cs: string, sql: string) => Promise<SqlRows>;
-  listTables: (cs: string, keyword?: string) => Promise<TableInfo[]>;
-  describe: (cs: string, table: string) => Promise<ColumnInfo[]>;
 }>;

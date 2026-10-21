@@ -13,6 +13,19 @@ import { createLogger } from "../infra/logger.js";
 
 const log = createLogger("settings");
 
+/**
+ * 解析 modelRef 绑定值：`mdl_xxx` 或 `mdl_xxx:model-name`。
+ * id 生成规则不含冒号，首个冒号后整段视为模型名（名内可含冒号则取首个分段——
+ * OpenAI 模型名无冒号，此约定足够）。空值返回 { modelId: "" }。
+ */
+export function parseModelBinding(value: string): { modelId: string; modelName: string } {
+  const v = (value ?? "").trim();
+  if (!v) return { modelId: "", modelName: "" };
+  const i = v.indexOf(":");
+  if (i < 0) return { modelId: v, modelName: "" };
+  return { modelId: v.slice(0, i), modelName: v.slice(i + 1).trim() };
+}
+
 export interface SettingEntry {
   key: string;
   value: string;
@@ -23,12 +36,11 @@ export interface SettingEntry {
  * 设置服务（DESIGN §2.10）。
  *
  * - 值以字符串存 settings 表；读取时按注册表解析为强类型。
- * - 热更新：内存缓存 + 变更订阅；写库后刷新缓存并通知订阅者，无需重启。
+ * - 热更新：内存缓存，写库后刷新缓存，下次读取即最新值，无需重启。
  * - 模型绑定项（modelRef）写入时校验模型存在且分类匹配。
  */
 export class SettingsService {
   private cache = new Map<string, string>();
-  private listeners = new Map<string, Set<(value: SettingValue) => void>>();
   private readonly raw: DatabaseSync;
   private readonly models: ModelRepo;
 
@@ -75,13 +87,17 @@ export class SettingsService {
     return this.get<number>(key);
   }
 
-  /** 解析模型绑定项，返回关联模型；未配置或无效返回 undefined。 */
+  /**
+   * 解析模型绑定项，返回关联模型条目（提供商）；未配置或无效返回 undefined。
+   * 绑定值格式：`mdl_xxx` 或 `mdl_xxx:model-name`（冒号后为覆盖的模型名，
+   * 用于 model 留空的纯提供商条目；旧格式纯 id 完全兼容）。
+   */
   getResolvedModel(key: string) {
     const def = getSettingDef(key);
     if (!def || def.type !== "modelRef") throw new Error(`${key} 不是模型绑定项`);
-    const id = this.getString(key);
-    if (!id) return undefined;
-    const model = this.models.get(id);
+    const binding = parseModelBinding(this.getString(key));
+    if (!binding.modelId) return undefined;
+    const model = this.models.get(binding.modelId);
     if (!model) return undefined;
     if (def.modelCategory && model.category !== def.modelCategory) return undefined;
     return model;
@@ -90,26 +106,41 @@ export class SettingsService {
   /**
    * 解析模型绑定项并组装为调用配置（baseUrl/apiKey/model）。
    * 收口各管线（recall/backfill/scheduler/管理端）中重复的 getResolvedModel + 三字段组装；
+   * 模型名优先取绑定值覆盖名，回退条目自身 model；两者皆空视为无效。
    * 未配置或无效返回 null（调用方据此降级）。
    */
   getResolvedLlmConfig(key: string): LlmCallConfig | null {
+    const def = getSettingDef(key);
+    if (!def || def.type !== "modelRef") throw new Error(`${key} 不是模型绑定项`);
+    const binding = parseModelBinding(this.getString(key));
+    if (!binding.modelId) return null;
     const m = this.getResolvedModel(key);
-    return m ? { baseUrl: m.url, apiKey: m.key, model: m.model } : null;
+    if (!m) return null;
+    const model = binding.modelName || m.model;
+    if (!model) return null;
+    return { baseUrl: m.url, apiKey: m.key, model };
   }
 
   /**
-   * 该模型是否被设置项引用（type=modelRef 且当前值等于该 id）。
+   * 该模型是否被设置项引用（type=modelRef 且绑定值的 id 部分等于该 id）。
    * 返回引用它的设置键列表；空数组表示未被使用，可安全编辑/删除。
    */
   modelUsage(modelId: string): string[] {
+    return this.modelBindingDetails(modelId).map((d) => d.key);
+  }
+
+  /** 引用某模型的绑定明细（键 + 覆盖模型名），供清空条目 model 前的可用性守卫。 */
+  modelBindingDetails(modelId: string): { key: string; modelName: string }[] {
     if (!modelId) return [];
-    const keys: string[] = [];
+    const out: { key: string; modelName: string }[] = [];
     for (const def of SETTING_DEFS) {
       if (def.type !== "modelRef") continue;
       const value = this.cache.get(def.key) ?? def.defaultValue;
-      if (value && value === modelId) keys.push(def.key);
+      if (!value) continue;
+      const b = parseModelBinding(value);
+      if (b.modelId === modelId) out.push({ key: def.key, modelName: b.modelName });
     }
-    return keys;
+    return out;
   }
 
   /** 写入（校验 + 落库 + 刷新缓存 + 通知订阅）。 */
@@ -121,12 +152,17 @@ export class SettingsService {
     if (err) throw new SettingValidationError(err);
 
     if (def.type === "modelRef" && value) {
-      const model = this.models.get(value);
-      if (!model) throw new SettingValidationError(`模型不存在: ${value}`);
+      const binding = parseModelBinding(value);
+      const model = this.models.get(binding.modelId);
+      if (!model) throw new SettingValidationError(`模型不存在: ${binding.modelId}`);
       if (def.modelCategory && model.category !== def.modelCategory) {
         throw new SettingValidationError(
           `模型分类不符：${key} 需要 ${def.modelCategory}，实际 ${model.category}`,
         );
+      }
+      // model 留空的提供商条目必须靠绑定值覆盖模型名，否则调用时无模型可用。
+      if (!binding.modelName && !model.model) {
+        throw new SettingValidationError(`该模型条目未指定模型名，绑定时需选择/填写具体模型`);
       }
     }
 
@@ -135,32 +171,8 @@ export class SettingsService {
       .prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at")
       .run(key, value, now);
     this.cache.set(key, value);
-    this.emit(key, parseSettingValue(def, value));
     log.debug({ key, value }, "设置已热更新");
     return { key, value, updatedAt: now };
-  }
-
-  /** 订阅某项变更（热更新回调）。返回取消订阅函数。 */
-  subscribe(key: string, cb: (value: SettingValue) => void): () => void {
-    let set = this.listeners.get(key);
-    if (!set) {
-      set = new Set();
-      this.listeners.set(key, set);
-    }
-    set.add(cb);
-    return () => set!.delete(cb);
-  }
-
-  private emit(key: string, value: SettingValue): void {
-    const set = this.listeners.get(key);
-    if (!set) return;
-    for (const cb of set) {
-      try {
-        cb(value);
-      } catch (err) {
-        log.warn({ key, err: String(err) }, "设置订阅回调抛错");
-      }
-    }
   }
 
   /** 列出全部设置（含元数据），供前端渲染。 */

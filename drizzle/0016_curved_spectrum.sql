@@ -1,0 +1,1 @@
+ALTER TABLE `models` ADD `models_json` text DEFAULT '[]' NOT NULL;

@@ -2,7 +2,7 @@
 {"ref":"db-module","kind":"fact","content":"LAM 项目通过 node:sqlite 内置模块访问 SQLite 数据库，避免原生编译依赖。","priority":85}
 {"ref":"vec-dim","kind":"fact","content":"向量检索维度固定为 1024，使用 sqlite-vec 的 vec0 虚拟表与 cosine 距离。","priority":80}
 {"ref":"layering","kind":"fact","content":"记忆分层为 L0 原始对话、L1 原子条目、L2 项目画像三层，L1 对应参考项目的 L1+L2 合并。","priority":78}
-{"ref":"recall-limit","kind":"instruction","content":"memory_search 与 conversation_search MCP 工具每轮合计最多调用 3 次，防止检索死循环。","priority":88}
+{"ref":"recall-limit","kind":"instruction","content":"memory_search MCP 工具每轮最多调用 3 次，防止检索死循环。","priority":88}
 {"ref":"no-auth","kind":"fact","content":"本项目定位为个人本地部署，无鉴权、无团队、无 ACL，仅监听 localhost。","priority":75}
 {"ref":"config-db","kind":"instruction","content":"所有业务配置一律存 DB（模型库 + 设置表），不使用配置文件，仅 PORT/DATA_DIR/FRONTEND_DIST 走环境变量。","priority":82}
 {"ref":"cg-external","kind":"fact","content":"CodeGraph 索引数据外置到 DATA_DIR/codegraph 目录，禁止在被扫描项目内写 .codegraph。","priority":80}

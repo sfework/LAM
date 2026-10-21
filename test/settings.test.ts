@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { runMigrations } from "../src/db/migrate.js";
 import { ModelRepo } from "../src/models/repo.js";
-import { SettingsService } from "../src/settings/service.js";
+import { SettingsService, parseModelBinding } from "../src/settings/service.js";
 import { SETTING_DEFS, parseSettingValue, validateSettingValue, getSettingDef } from "../src/settings/registry.js";
 
 function freshDb(): DatabaseSync {
@@ -19,13 +19,14 @@ describe("migrations", () => {
     );
     for (const t of [
       "projects", "prompts", "agents", "knowledge", "denoise_rules",
-      "models", "settings", "mem_l0", "mem_l1", "mem_l2", "extract_queue",
+      "models", "settings", "mem_l0", "mem_l1", "mem_l2",
       "pipeline_state", "sessions",
     ]) {
       expect(names, `缺表 ${t}`).toContain(t);
     }
-    // CodeGraph 功能已整体移除：cg_* 全部表（含状态表 cg_status）均已删除
-    for (const gone of ["cg_status", "cg_files", "cg_symbols", "cg_edges", "cg_calls", "cg_extends", "cg_imports", "cg_bindings"]) {
+    // CodeGraph 功能已整体移除：cg_* 全部表（含状态表 cg_status）均已删除；
+    // extract_queue 早期设计残留，随迁移 0014 删除（崩溃恢复靠 pipeline_state 缓冲）。
+    for (const gone of ["cg_status", "cg_files", "cg_symbols", "cg_edges", "cg_calls", "cg_extends", "cg_imports", "cg_bindings", "extract_queue"]) {
       expect(names, `应已删除 ${gone}`).not.toContain(gone);
     }
   });
@@ -44,8 +45,7 @@ describe("registry", () => {
   });
   it("类型解析正确", () => {
     expect(parseSettingValue(getSettingDef("l1_recall_top_k")!, "7")).toBe(7);
-    expect(parseSettingValue(getSettingDef("l1_warmup_enabled")!, "false")).toBe(false);
-    expect(parseSettingValue(getSettingDef("memory_similarity_threshold")!, "0.9")).toBeCloseTo(0.9);
+    expect(parseSettingValue(getSettingDef("l1_recall_similarity_min")!, "0.7")).toBeCloseTo(0.7);
   });
   it("越界/类型错误被拒", () => {
     const def = getSettingDef("l1_recall_top_k")!;
@@ -83,8 +83,7 @@ describe("settingsService", () => {
   });
 
   it("init 回填默认值", () => {
-    expect(svc.getInt("l1_recall_top_k")).toBe(5);
-    expect(svc.getBool("l1_recall_enabled")).toBe(true);
+    expect(svc.getInt("l1_recall_top_k")).toBe(10);
   });
 
   it("set 落库 + 热更新读取", () => {
@@ -98,17 +97,13 @@ describe("settingsService", () => {
 
   it("非法值抛错", () => {
     expect(() => svc.set("l1_recall_top_k", "0")).toThrow();
-    expect(() => svc.set("l1_recall_enabled", "yes")).toThrow();
   });
 
-  it("变更订阅回调", () => {
-    const seen: number[] = [];
-    const off = svc.subscribe("l1_recall_top_k", (v) => seen.push(v as number));
+  it("变更即时生效（读写一致性）", () => {
     svc.set("l1_recall_top_k", "6");
+    expect(svc.getInt("l1_recall_top_k")).toBe(6);
     svc.set("l1_recall_top_k", "7");
-    off();
-    svc.set("l1_recall_top_k", "8");
-    expect(seen).toEqual([6, 7]);
+    expect(svc.getInt("l1_recall_top_k")).toBe(7);
   });
 
   it("modelRef 校验模型存在与分类", () => {
@@ -121,5 +116,32 @@ describe("settingsService", () => {
     // 允许置空（全部不生效）
     expect(() => svc.set("gateway_llm", "")).not.toThrow();
     expect(svc.getResolvedModel("gateway_llm")).toBeUndefined();
+  });
+
+  it("modelRef 绑定值支持 id:model 覆盖模型名", () => {
+    const llm = models.create({ category: "llm", name: "L", url: "http://u/v1", model: "m" });
+    svc.set("gateway_llm", `${llm.id}:gpt-5`);
+    expect(svc.getResolvedModel("gateway_llm")?.id).toBe(llm.id);
+    expect(svc.getResolvedLlmConfig("gateway_llm")).toEqual({ baseUrl: "http://u/v1", apiKey: "", model: "gpt-5" });
+    // 引用统计按 id 部分匹配（覆盖名不影响 inUse 判定）
+    expect(svc.modelUsage(llm.id)).toEqual(["gateway_llm"]);
+    // 分类校验对覆盖名同样生效
+    expect(() => svc.set("embedding_model", `${llm.id}:x`)).toThrow();
+  });
+
+  it("纯提供商条目（model 空）：绑定必须带覆盖模型名", () => {
+    const prov = models.create({ category: "llm", name: "P", url: "http://p/v1", model: "" });
+    // 无覆盖名 → 拒绝绑定（否则运行时拿不到模型名）
+    expect(() => svc.set("gateway_llm", prov.id)).toThrow(/模型名/);
+    expect(svc.getResolvedLlmConfig("gateway_llm")).toBeNull();
+    // 带覆盖名 → 正常解析
+    svc.set("gateway_llm", `${prov.id}:deepseek-chat`);
+    expect(svc.getResolvedLlmConfig("gateway_llm")).toEqual({ baseUrl: "http://p/v1", apiKey: "", model: "deepseek-chat" });
+  });
+
+  it("parseModelBinding 三态", () => {
+    expect(parseModelBinding("")).toEqual({ modelId: "", modelName: "" });
+    expect(parseModelBinding("mdl_abc")).toEqual({ modelId: "mdl_abc", modelName: "" });
+    expect(parseModelBinding("mdl_abc:gpt-4o")).toEqual({ modelId: "mdl_abc", modelName: "gpt-4o" });
   });
 });

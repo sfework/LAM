@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import { chatCompletionsAdapter, firstUserText, messageText } from "../src/gateway/protocol.js";
 import { deriveSessionKey } from "../src/gateway/sessions.js";
 import { injectSnapshot } from "../src/gateway/snapshot.js";
-import { clipList } from "../src/assets/repo.js";
 
 describe("chatCompletionsAdapter", () => {
   it("parse 分离 model/messages/stream/extra", () => {
@@ -87,22 +86,5 @@ describe("injectSnapshot", () => {
     const msgs = [{ role: "system", content: "base" }];
     injectSnapshot(msgs, "SNAP");
     expect(msgs[0]!.content).toBe("base");
-  });
-});
-
-describe("clipList", () => {
-  const items = [
-    { id: "kno_aaaaaaaaaa", title: "bbbbbbbbbb", description: "cccccccccc" },
-    { id: "kno_cccccccccc", title: "dddddddddd", description: "eeeeeeeeee" },
-  ];
-  it("按条数截断", () => {
-    expect(clipList(items, 1, 9999)).toHaveLength(1);
-  });
-  it("按字符截断（首条始终保留）", () => {
-    // 每条 cost = 12+10+10+6 = 38；maxChars=40 → 只能放 1 条（第 2 条 38+38>40）
-    expect(clipList(items, 99, 40)).toHaveLength(1);
-  });
-  it("首条超预算也保留（至少 1 条）", () => {
-    expect(clipList(items, 99, 1)).toHaveLength(1);
   });
 });

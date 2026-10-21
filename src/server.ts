@@ -25,7 +25,6 @@ import { L2Refiner } from "./memory/l2-refiner.js";
 import { ExtractionScheduler } from "./memory/scheduler.js";
 import { MemoryRecaller } from "./memory/recall.js";
 import { EmbeddingBackfiller } from "./memory/embed-backfill.js";
-import { MemoryExpirer } from "./memory/expiry.js";
 import { SqlService } from "./sql/service.js";
 
 /**
@@ -128,7 +127,7 @@ export function bootstrap(): {
   const denoise = new DenoiseRepo(handle.raw);
   const assets = new AssetsRepo(handle.raw);
   const sessions = new SessionRepo(handle.raw);
-  const snapshot = new SnapshotBuilder(assets, settings);
+  const snapshot = new SnapshotBuilder(assets);
   const l0 = new L0Recorder(handle.raw, handle.fts5Available);
   const l1Store = new L1Store(handle.raw, handle.fts5Available, handle.vecAvailable);
   const l1Extractor = new L1Extractor(handle.raw, l1Store, settings);
@@ -138,12 +137,11 @@ export function bootstrap(): {
   l2.pathOf = (id) => projects.findById(id)?.path;
   const recaller = new MemoryRecaller(l1Store, settings);
   const backfiller = new EmbeddingBackfiller(l1Store, settings);
-  const expirer = new MemoryExpirer(l1Store, settings);
-  const scheduler = new ExtractionScheduler(handle.raw, settings, l1Extractor, l2, backfiller, expirer);
+  const scheduler = new ExtractionScheduler(handle.raw, settings, l1Extractor, l2, backfiller);
   const sql = new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") });
 
-  const gatewayDeps: GatewayDeps = { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller };
-  const internalDeps: InternalDeps = { projects, assets, l1: l1Store, l0, l2, recaller, settings, sql };
+  const gatewayDeps: GatewayDeps = { projects, denoise, settings, sessions, snapshot, l0, l2, recaller };
+  const internalDeps: InternalDeps = { projects, assets, l1: l1Store, l2, recaller, settings, sql };
 
   const app = createApp({
     api: { models, settings, projects, denoise, assets, l0, l1: l1Store, l2 },

@@ -7,7 +7,7 @@
 | 能力 | 说明 |
 |---|---|
 | **项目级记忆闭环** | 对话回流（L0）→ 结构化提取（L1 原子事实/偏好/决策）→ 项目画像（L2），每轮自动召回相关记忆注入 |
-| **记忆自维护** | 冲突检测做语义过期（store/skip/update/merge）；常驻清扫按类型 TTL 评审超龄记忆（删除 / 修剪 / 续期） |
+| **记忆自维护** | 冲突检测做语义过期（store/skip/update/merge）；每轮召回块尾部提示，授权 Agent 任务后改/删本轮错旧条目（新增仍走提取） |
 | **资产注入** | 提示词 / Agents / 知识库清单注入系统提示，正文经 MCP 工具按 id 按需读取，渐进披露省 token |
 | **SQL 只读查询** | 对接外部业务库（SQLite / PostgreSQL / MySQL / SQL Server），仅放行单条 SELECT/WITH，供 Agent 探查表与数据 |
 | **消息除噪** | 按规则剥离注入块 / 环境噪音，转发与记忆两条通道各自干净 |
@@ -44,11 +44,11 @@ graph LR
     L1 -->|定期凝练| L2[(L2 项目画像)]
     L1 -->|每轮混合检索| G
     L2 -->|快照注入| G
-    S -->|超龄评审| L1
+    S -->|显式触发整理| L1
 ```
 
 一次请求的**读侧**路径：项目识别 → 除噪 → 会话判定 → 注入快照（缓存复用）→ 动态召回 → 转发上游；
-响应结束后的**写侧**路径（fire-and-forget，不阻塞响应）：final answer 判定 → L0 落库 → 调度器按阈值批量提取 L1 → 凝练 L2 → 过期清扫。
+响应结束后的**写侧**路径（fire-and-forget，不阻塞响应）：final answer 判定 → L0 落库 → 调度器按阈值批量提取 L1 → 凝练 L2。对话内还有轻量自维护：召回块尾部提示授权 Agent 任务后修正/删除本轮召回的错旧条目（禁止新增）。
 
 ## 功能详解
 
@@ -57,14 +57,14 @@ graph LR
 客户端把 Base URL 指向它即可，无需改任何代码：
 
 - **注入（读侧）**：会话首轮生成一份注入快照（生效提示词正文 + 知识库/Agents 清单 + L2 项目画像 + 项目路径，共 5 节，空节省略），追加到 system 消息末尾且**跨轮字节级一致**——命中上游 KV 缓存；另按当轮用户问题动态召回相关 L1 记忆，以 `<recalled>` 块拼在最后一条 user 消息之前（与会话级快照分离，不进 system）；
-- **回流（写侧）**：本轮回答无 tool_calls（final answer）时，新增对话增量写入 L0；后台调度器按阈值 / warm-up / idle 批量触发 L1 提取（JSON mode + 两阶段冲突检测：store/skip/update/merge，小颗粒一条一事）与 L2 项目画像凝练（首次全量、后续增量）；
+- **回流（写侧）**：本轮回答无 tool_calls（final answer）时，新增对话增量写入 L0；后台调度器按阈值（攒够 l1_trigger_conversations 轮）批量触发 L1 提取（JSON mode + 两阶段冲突检测：store/skip/update/merge，小颗粒一条一事）与 L2 项目画像凝练（首次全量、后续增量）；
 - **消息除噪**：按规则（起始/结束标记，正则非贪婪）剥离客户端环境块等噪音，转发与记忆两条通道可各自独立生效。
 
 ### 三层记忆（按项目隔离）
 
 | 层 | 内容 | 用法 |
 |---|---|---|
-| L0 | 原始对话切片（只落 user/assistant 纯文本） | `conversation_search` 检索溯源 |
+| L0 | 原始对话切片（只落 user/assistant 纯文本） | 供提取管线回看与溯源（L1 source_l0_ids）；管理台可检索浏览 |
 | L1 | 小颗粒原子记忆（persona/episodic/instruction/fact/method/artifact 六类，带优先级与 L0 溯源） | 每轮动态召回注入 + `memory_search` 兜底 |
 | L2 | 项目画像（每项目单份 Markdown，LLM 从 L1 定期凝练） | 快照全文注入 |
 
@@ -72,8 +72,8 @@ graph LR
 
 **两条过期路径**：
 
-1. **语义过期**（冲突检测）：新记忆推翻旧事实时，旧行置 `superseded_by` 即刻退出检索，行保留作溯源；
-2. **时间过期**（常驻清扫）：按类型 TTL 筛超龄记忆（episodic 30 天 / artifact 90 天，其余默认永不过期），交 memory_llm 逐条评审——`delete` 物理删（L0 溯源保留）/ `rewrite` 修剪过时部分保留有效内容 / `keep` 写续期锚点；评审失败或存疑一律保守跳过不删。
+1. **语义过期**（冲突检测，自动）：新记忆推翻旧事实时，旧行置 `superseded_by` 即刻退出检索，行保留作溯源；
+2. **对话内修正**（召回提示授权）：每轮 `<recalled>` 块尾部固定提示行授权 Agent 任务后用 `memory_batch_update`/`memory_batch_delete` 改/删**本轮召回的错旧条目**（须先反证，禁止新增）；全库性清理可让 Agent 用 `memory_batch_read` 分页盘点后按同样工具执行。
 
 ### 资产管理
 
@@ -85,7 +85,7 @@ graph LR
 
 ### 无配置文件
 
-38 项运行参数（模型绑定、注入预算、提取调度、召回阈值、过期策略等）全存 SQLite，管理台按注册表自动渲染控件，**改完即热生效、无需重启**。仅 `PORT` / `DATA_DIR` / `FRONTEND_DIST` 三个环境变量在进程启动层面读取（见 [`.env.example`](.env.example)）。
+18 项运行参数（模型绑定、提取调度、召回阈值等）全存 SQLite，管理台按注册表自动渲染控件，**改完即热生效、无需重启**。仅 `PORT` / `DATA_DIR` / `FRONTEND_DIST` / `LOG_LEVEL` / `MCP_SEARCH_WINDOW_MS` 五个环境变量在进程启动层面读取（见 [`.env.example`](.env.example)）。
 
 ## 环境要求
 
@@ -121,11 +121,11 @@ curl http://localhost:8790/health
 
 在管理台完成，也可用 `POST /api/*` 接口（一律 JSON body）：
 
-1. **「模型」页**：注册一个 LLM（分类 llm，填 url / key / model）与一个 embedding 模型（分类 embedding）；
-2. **「设置」页**：把三项模型绑定填上——
+1. **「模型」页**：每个条目是一个 **LLM 提供商**（分类 llm / embedding，填名称 / Base URL / 密钥）。「模型」区有两种输入页签（**模式随条目持久化，保存只落当前模式的数据**）：**自动获取**——点「读取模型」调 `GET {url}/models` 拉取该提供商可用模型，读到的全部模型直接记入清单（无需勾选，只读输入框仅显示已获取数量，可重读覆盖）；**手工输入**——提供商不支持 /models 端点时，手输它唯一支持的模型名（清单即这一个）。最终存储为「提供商 → 可用模型清单」（清单首项为默认模型），可留空，绑定时再指定；
+2. **「设置」页**：三项模型绑定为可搜索下拉，**每个可用模型一个选项，文案 `提供商/可用模型`**（默认模型存纯 id；其余存 `id:模型名` 覆盖格式，旧绑定完全兼容）——
    - `gateway_llm`：网关转发的主模型（客户端请求里的 `model` 字段会被忽略，一律以此为准）；
    - `memory_llm`：记忆提取/画像凝练用模型；
-   - `embedding_model`：向量化模型（可留空，留空则召回只用 BM25）。
+   - `embedding_model`：向量化模型（可留空不绑定，留空则召回只用 BM25）。
 
 保存即热生效。
 
@@ -167,21 +167,20 @@ MCP Server 挂在同一端口：**`http://localhost:8790/mcp`**（Streamable HTT
 }
 ```
 
-开放 **26 个工具**（检索/读取为主，记忆与资产类含维护写操作）：
+开放 **18 个工具**（检索/读取为主，记忆与资产类含维护写操作）：
 
 | 分组 | 工具 | 用途 |
 |------|------|------|
 | 知识库 | `knowledge_read` / `knowledge_create` / `knowledge_update` / `knowledge_delete` | 按 id 读正文（清单已注入系统提示 `<knowledge>` 段）/ 建条目（缺省挂本项目，可 global）/ 部分更新内容字段 / 物理删除 |
 | Agents | `agent_read` / `agent_create` / `agent_update` / `agent_delete` | 按 id 读正文（清单已注入系统提示 `<agents>` 段）/ 新建定义 / 部分更新 / 删除 |
 | 记忆 | `memory_search` / `memory_batch_read` / `memory_batch_update` / `memory_batch_delete` / `memory_profile_read` / `memory_profile_update` | 检索 L1 / 分页读全部活跃记忆（从早到晚）/ 批量改写正文（单批 ≤20）/ 批量物理删除（数量不限）/ 读 L2 画像 / 整篇保存 L2 画像 |
-| 对话 | `conversation_search` | 检索 L0 原文 |
-| SQL | `sql_query_<方言>` / `sql_list_tables_<方言>` / `sql_describe_table_<方言>` | 外部业务库只读查询（方言：sqlite / postgresql / mysql / sqlserver） |
+| SQL | `sql_query_<方言>` | 外部业务库只读查询（方言：sqlite / postgresql / mysql / sqlserver；表结构可按需 SELECT 系统表获取） |
 
 注意四点：
 
-- **写类工具使用红线**：记忆与资产的增/删/改工具描述均标注「除非用户明确要求，否则禁止自行调用」——写操作须经用户授权；`enabled`/排序等管理属性只归管理台；
+- **写类工具使用红线**：记忆与资产的增/删/改工具描述均标注「除非用户明确要求，否则禁止自行调用」——写操作须经用户授权；`enabled`/排序等管理属性只归管理台；例外：每轮召回块（`<recalled>`）尾部固定注入提示行，授权 Agent 任务后对**本轮召回条目**改/删（须先反证），禁止新增——新增由后台提取管线负责；
 - **L2 画像仅开放 read/update**：无 create/delete 工具——新建由凝练管线自动完成，删除/重置归管理台；
-- `memory_search` 与 `conversation_search` 合计约 30 秒窗口内最多 3 次（防检索死循环），超限返回提示文本；
+- `memory_search` 约 30 秒窗口内最多 3 次（防检索死循环），超限返回提示文本；
 - SQL 工具查的是**外部业务库**，连接串由调用参数直传（如 `postgres://user:pass@host:5432/db`），只允许单条 SELECT/WITH，行数有上限，失败原因以正常文本返回供模型自我修正。
 
 ### 3. 管理台
@@ -228,7 +227,7 @@ Install-Service.bat uninstall   卸载
 | `pnpm dev` | 后端热重载开发 |
 | `pnpm run build:web` | 构建前端管理台产物 |
 | `pnpm typecheck` | TypeScript 类型检查 |
-| `pnpm test` / `pnpm test:watch` | vitest 单测（14 文件 / 288 项） |
+| `pnpm test` / `pnpm test:watch` | vitest 单测（记忆整理、召回、提取、迁移、MCP 等 14 个测试文件） |
 | `pnpm bench:recall` | 召回质量基准（Recall@k / MRR，BM25 vs hybrid 对比） |
 | `pnpm sim` | 真实环境端到端仿真（需服务运行，真实 LLM + 真实节律） |
 | `pnpm db:generate` / `pnpm db:migrate` | drizzle-kit 生成迁移 / 应用迁移 |
@@ -238,7 +237,7 @@ Install-Service.bat uninstall   卸载
 ```
 src/
   gateway/    透明网关：协议解析、除噪、注入快照、会话、转发
-  memory/     记忆管线：L0 回流、L1 提取与冲突检测、L2 凝练、召回、补嵌入、过期清扫、调度器
+  memory/     记忆管线：L0 回流、L1 提取与冲突检测、L2 凝练、召回、补嵌入、调度器
   assets/     资产仓储（提示词 / Agents / 知识库）
   api/        /api/* 管理接口（一律 POST + JSON body）
   mcp/        MCP 工具面（Streamable HTTP，经 /internal 进程内取数）
@@ -258,7 +257,7 @@ scripts/      基准、仿真、数据清理等运维脚本
 
 本项目是在以下开源项目基础上学习、简化与重新实现的个人本地化版本，在此致谢：
 
-- **[TencentCloud/TencentDB-Agent-Memory](https://github.com/TencentCloud/TencentDB-Agent-Memory)** —— 主要参考项目。本项目的记忆分层（L0/L1/L2）、提取调度（warm-up/idle/串行队列）、两阶段冲突检测、会话注入快照、MCP 工具面等均源自其工程实践，并针对“单用户、本机部署、无团队/鉴权”场景做了大幅简化重组（去掉多租户、team/agent/task 身份体系与多客户端适配器）。
+- **[TencentCloud/TencentDB-Agent-Memory](https://github.com/TencentCloud/TencentDB-Agent-Memory)** —— 主要参考项目。本项目的记忆分层（L0/L1/L2）、提取调度（阈值/串行队列）、两阶段冲突检测、会话注入快照、MCP 工具面等均源自其工程实践，并针对“单用户、本机部署、无团队/鉴权”场景做了大幅简化重组（去掉多租户、team/agent/task 身份体系与多客户端适配器；warm-up 渐进阈值与会话空闲兜底也已取消，固定轮数阈值触发）。
 - **[ccrisan/nssm](https://nssm.cc/)** —— Non-Sucking Service Manager，`Install-Service.bat` 用它将本服务注册为 Windows 服务。
 
 内部实现直接依赖的主要开源组件：[Hono](https://hono.dev/)（HTTP 框架）、[drizzle-orm](https://orm.drizzle.team/)（schema/迁移）、[node:sqlite](https://nodejs.org/api/sqlite.html) + [sqlite-vec](https://github.com/asg017/sqlite-vec)（存储与向量检索）、[Model Context Protocol SDK](https://modelcontextprotocol.io/)（MCP）、[React](https://react.dev/) + [Semi Design](https://semi.design/)（管理台）、[pino](https://getpino.io/)（日志）。

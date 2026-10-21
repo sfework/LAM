@@ -488,8 +488,6 @@ describe("ExtractionScheduler", () => {
   function setup() {
     const ctx = fresh();
     ctx.settings.set("l1_trigger_conversations", "3");
-    ctx.settings.set("l1_warmup_enabled", "false");
-    ctx.settings.set("l1_idle_seconds", "5");
     const extractor = new L1Extractor(ctx.raw, ctx.store, ctx.settings, async (_c, msgs) => {
       if (msgs[0]!.content.includes("冲突检测器")) return "[]";
       return JSON.stringify([{ scene_name: "批", message_ids: [], memories: [{ content: `提取结果 ${Date.now()}`, type: "fact", priority: 90, source_message_ids: [], metadata: {} }] }]);
@@ -527,40 +525,6 @@ describe("ExtractionScheduler", () => {
     const ps = ctx.raw.prepare("SELECT conversation_count, buffered_message_ids FROM pipeline_state WHERE project_id = ?").get(ctx.projectId) as { conversation_count: number; buffered_message_ids: string };
     expect(ps.conversation_count).toBe(0);
     expect(ps.buffered_message_ids).toBe("[]");
-  });
-
-  it("warm-up：阈值 1 → 成功后翻倍为 2", async () => {
-    const { ctx, sched } = setup();
-    ctx.settings.set("l1_warmup_enabled", "true");
-    feedTurns(ctx, 1);
-    expect(await sched.tick()).toBe(1); // 阈值 1 立即触发
-    await new Promise((r) => setTimeout(r, 50));
-    const ps = ctx.raw.prepare("SELECT warmup_threshold FROM pipeline_state WHERE project_id = ?").get(ctx.projectId) as { warmup_threshold: number };
-    expect(ps.warmup_threshold).toBe(2);
-    // 第二轮：1 条不再触发（阈值 2）
-    feedTurns(ctx, 1);
-    expect(await sched.tick()).toBe(0);
-    feedTurns(ctx, 1);
-    expect(await sched.tick()).toBe(1);
-    await new Promise((r) => setTimeout(r, 50));
-    const ps2 = ctx.raw.prepare("SELECT warmup_threshold FROM pipeline_state WHERE project_id = ?").get(ctx.projectId) as { warmup_threshold: number };
-    expect(ps2.warmup_threshold).toBe(3); // min(3 上限, 4) → cap=3
-  });
-
-  it("idle 兜底：缓冲不足阈值但空闲超时也提取", async () => {
-    const { ctx, sched } = setup();
-    feedTurns(ctx, 1);
-    // 把 last_seen_at 推过去（超过 l1_idle_seconds=5s）
-    ctx.raw.prepare("UPDATE sessions SET last_seen_at = ? WHERE session_key = 's1'").run(Date.now() - 10_000);
-    expect(await sched.tick()).toBe(1);
-  });
-
-  it("extraction_enabled=false 时调度停摆", async () => {
-    const { ctx, sched } = setup();
-    ctx.settings.set("extraction_enabled", "false");
-    feedTurns(ctx, 5);
-    expect(await sched.tick()).toBe(0);
-    expect(ctx.store.listActive(ctx.projectId)).toHaveLength(0);
   });
 
   it("memory_llm 未配置时静默跳过", async () => {

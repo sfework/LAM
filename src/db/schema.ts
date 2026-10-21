@@ -73,7 +73,9 @@ export const denoiseRules = sqliteTable("denoise_rules", {
   updatedAt: integer("updated_at", { mode: "number" }).notNull(),
 });
 
-/** models：模型库（llm|embedding），供 settings 按 id 绑定 */
+/** models：模型库（llm|embedding），条目=LLM 提供商；models_json 为提供商下可用模型清单快照
+ *  （/models 拉取或手输，不支持 /models 时通常只有手输的一个）；model 为默认模型（清单首项），
+ *  供 settings 纯 id 绑定回退；绑定值 id:model 可指定清单内其他模型。 */
 export const models = sqliteTable(
   "models",
   {
@@ -83,6 +85,9 @@ export const models = sqliteTable(
     url: text("url").notNull(),
     key: text("key").notNull().default(""),
     model: text("model").notNull(),
+    modelsJson: text("models_json").notNull().default("[]"),
+    /** 模型录入模式：auto=自动获取（清单为 /models 全量）；manual=手工输入（清单仅一个手输模型）。 */
+    modelMode: text("model_mode").$type<"auto" | "manual">().notNull().default("auto"),
     createdAt: integer("created_at", { mode: "number" }).notNull(),
     updatedAt: integer("updated_at", { mode: "number" }).notNull(),
   },
@@ -134,7 +139,7 @@ export const memL1 = sqliteTable(
     supersededBy: text("superseded_by"),
     deletedAt: integer("deleted_at", { mode: "number" }),
   },
-  (t) => [index("ix_l1_project").on(t.projectId, t.deletedAt), index("ix_l1_batch").on(t.batchId)],
+  (t) => [index("ix_l1_project").on(t.projectId, t.deletedAt)],
 );
 
 /** mem_l2：项目画像，每项目单份，凝练替换更新（version 自增） */
@@ -151,24 +156,7 @@ export const memL2 = sqliteTable(
   (t) => [uniqueIndex("uq_l2_project").on(t.projectId)],
 );
 
-/** extract_queue：崩溃恢复重入队；attempts 达上限置 failed */
-export const extractQueue = sqliteTable(
-  "extract_queue",
-  {
-    id: text("id").primaryKey(),
-    projectId: text("project_id").notNull(),
-    sessionKey: text("session_key").notNull(),
-    type: text("type").$type<"l1" | "l2">().notNull(),
-    status: text("status").$type<"pending" | "processing" | "done" | "failed">().notNull().default("pending"),
-    payload: text("payload").notNull().default("{}"),
-    attempts: integer("attempts", { mode: "number" }).notNull().default(0),
-    createdAt: integer("created_at", { mode: "number" }).notNull(),
-    updatedAt: integer("updated_at", { mode: "number" }).notNull(),
-  },
-  (t) => [index("ix_queue_status").on(t.status)],
-);
-
-/** pipeline_state：提取调度器状态（warm-up 阈值、缓冲、上批情境、L0 游标） */
+/** pipeline_state：提取调度器状态（缓冲、上批情境） */
 export const pipelineState = sqliteTable(
   "pipeline_state",
   {
@@ -176,9 +164,7 @@ export const pipelineState = sqliteTable(
     projectId: text("project_id").notNull(),
     sessionKey: text("session_key").notNull(),
     conversationCount: integer("conversation_count", { mode: "number" }).notNull().default(0),
-    warmupThreshold: integer("warmup_threshold", { mode: "number" }).notNull().default(0),
     lastSceneName: text("last_scene_name"),
-    lastL1At: integer("last_l1_at", { mode: "number" }),
     lastL2At: integer("last_l2_at", { mode: "number" }),
     bufferedMessageIds: text("buffered_message_ids").notNull().default("[]"),
   },

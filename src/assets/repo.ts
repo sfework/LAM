@@ -56,20 +56,6 @@ function toKnowledge(r: Record<string, unknown>): KnowledgeRow {
   return { id: r.id as string, title: r.title as string, description: r.description as string, body: r.body as string, scope: r.scope as KnowledgeRow["scope"], projectId: (r.project_id as string | null) ?? null, enabled: Boolean(r.enabled), sortOrder: r.sort_order as number, updatedAt: r.updated_at as number, deletedAt: (r.deleted_at as number | null) ?? null };
 }
 
-/** 清单截断：按 maxItems 条数 + maxChars 累计字符（超限即止）。 */
-export function clipList(items: AssetListItem[], maxItems: number, maxChars: number): AssetListItem[] {
-  const out: AssetListItem[] = [];
-  let used = 0;
-  for (const it of items) {
-    if (out.length >= maxItems) break;
-    const cost = it.id.length + it.title.length + it.description.length + 6; // "- " + 两个"：" + 换行
-    if (out.length > 0 && used + cost > maxChars) break;
-    out.push(it);
-    used += cost;
-  }
-  return out;
-}
-
 export class AssetsRepo {
   private readonly raw: DatabaseSync;
 

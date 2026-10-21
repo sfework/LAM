@@ -6,6 +6,14 @@ import Net from '../Common/Net';
 
 /**
  * 设置页（/api/settings，DESIGN §2.10）：按注册表元数据自动渲染控件——
+ *   int/float → InputNumber；bool → Switch；string → Input；
+ *   modelRef → 可搜索模型下拉（按分类取 /api/models，选项文案“名称/模型名”；
+ *   绑定值支持 `id` 或 `id:模型名` 覆盖格式，后端解析）。
+ * 修改后点「保存」调 /api/settings/set（字符串值，服务端按类型校验），热更新即时生效。
+ */
+
+/**
+ * 设置页（/api/settings，DESIGN §2.10）：按注册表元数据自动渲染控件——
  *   int/float → InputNumber；bool → Switch；string → Input；modelRef → 模型下拉（按分类取 /api/models）。
  * 修改后点「保存」调 /api/settings/set（字符串值，服务端按类型校验），热更新即时生效。
  */
@@ -69,9 +77,30 @@ class Settings extends React.Component {
                     precision={item.type === 'int' ? 0 : undefined}
                     style={{ width: 180 }} onChange={(n) => this.onChange(item.key, n)} />;
             case 'modelRef': {
-                const opts = (this.state.models[item.modelCategory] || [])
-                    .map(m => ({ label: `${m.name}（${m.model}）`, value: m.id }));
-                return <Select value={v || ''} optionList={opts} style={{ width: 350 }}
+                // 提供商→模型展开：每个模型一个选项“提供商/模型”，值 `id:模型名`；
+                // 提供商无清单但有默认模型（手输的唯一模型）时单选项，值纯 id（兼容存量绑定）。
+                const list = this.state.models[item.modelCategory] || [];
+                const opts = [];
+                for (const m of list) {
+                    const ms = (m.models && m.models.length) ? m.models : (m.model ? [m.model] : []);
+                    if (!ms.length) { opts.push({ label: `${m.name}（无模型，请编辑补充）`, value: m.id, disabled: true }); continue; }
+                    for (const name of ms) {
+                        opts.push({ label: `${m.name}/${name}`, value: name === m.model ? m.id : `${m.id}:${name}` });
+                    }
+                }
+                // 当前绑定值指向的模型不在清单里（提供商清单后来变了）：补一个动态选项防回显丢失。
+                const cur = String(v || '');
+                if (cur && !opts.some(o => o.value === cur)) {
+                    const i = cur.indexOf(':');
+                    const pid = i < 0 ? cur : cur.slice(0, i);
+                    const pname = (list.find(m => m.id === pid) || {}).name || pid;
+                    opts.unshift({ label: `${pname}/${i < 0 ? '（默认）' : cur.slice(i + 1)}`, value: cur });
+                }
+                return <Select value={cur} optionList={opts} style={{ width: 350 }} search
+                    // Semi 内置搜索为 label 前缀匹配；选项文案是“提供商/模型名”，
+                    // 改为不区分大小写的包含匹配，搜提供商名或模型名任一段都能命中。
+                    filter={(input, option) => String(option.label ?? '').toLowerCase()
+                        .includes(String(input ?? '').toLowerCase())}
                     placeholder="未绑定" showClear onChange={(val) => this.onChange(item.key, val ?? '')} />;
             }
             default:

@@ -48,15 +48,23 @@ function makeApp() {
   const denoise = new DenoiseRepo(raw);
   const assets = new AssetsRepo(raw);
   const sessions = new SessionRepo(raw);
-  const snapshot = new SnapshotBuilder(assets, settings);
+  const snapshot = new SnapshotBuilder(assets);
   const l0 = new L0Recorder(raw, true);
   const l1Store = new L1Store(raw, true, false);
   const l2 = new L2Refiner(raw, l1Store, settings);
   const recaller = new MemoryRecaller(l1Store, settings);
   const deps: AppDeps = {
     api: { models, settings, projects, denoise, assets, l0, l1: l1Store, l2 },
-    gateway: { projects, denoise, assets, settings, sessions, snapshot, l0, l2, recaller },
-    internal: { projects, assets, l1: l1Store, l0, l2, recaller, settings, sql: new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") }) },
+    gateway: { projects, denoise, settings, sessions, snapshot, l0, l2, recaller },
+    internal: {
+      projects,
+      assets,
+      l1: l1Store,
+      l2,
+      recaller,
+      settings,
+      sql: new SqlService({ maxRows: () => settings.getInt("sql_query_max_rows") }),
+    },
   };
   return { app: createApp(deps), raw, models, projects, denoise, assets, l0, l1Store, settings };
 }
@@ -333,10 +341,10 @@ describe("/api/tools", () => {
 
   it("POST /list keyword 模糊匹配名称/描述", async () => {
     const { app } = makeApp();
-    const byName = await call(app, "POST", "/api/tools/list", { keyword: "sql_list_tables", pageSize: 100 });
+    const byName = await call(app, "POST", "/api/tools/list", { keyword: "sql_query", pageSize: 100 });
     const nameList = (byName.body.data as { list: { name: string }[] }).list;
     expect(nameList.length).toBeGreaterThanOrEqual(4);
-    expect(nameList.every((t) => t.name.includes("sql_list_tables"))).toBe(true);
+    expect(nameList.every((t) => t.name.includes("sql_query"))).toBe(true);
     const byDesc = await call(app, "POST", "/api/tools/list", { keyword: "溯源", pageSize: 100 });
     expect((byDesc.body.data as { list: unknown[] }).list.length).toBeGreaterThan(0);
     const none = await call(app, "POST", "/api/tools/list", { keyword: "不存在的工具xyz", pageSize: 100 });
@@ -363,7 +371,7 @@ describe("/api/* 结构复核", () => {
     const { app } = makeApp();
     const r = await call(app, "POST", "/api/settings/list");
     const page = r.body.data as { list: { key: string; type: string; defaultValue: string }[]; totalCount: number };
-    expect(page.totalCount).toBeGreaterThan(20);
+    expect(page.totalCount).toBeGreaterThanOrEqual(18);
     expect(page.list.find((s) => s.key === "gateway_llm")?.type).toBe("modelRef");
   });
 
@@ -398,6 +406,74 @@ describe("/api/* 结构复核", () => {
     const r = await call(app, "POST", "/api/models/create", { category: "llm", name: "m", url: "http://x/v1", model: "mm" });
     expect(r.status).toBe(400);
     expect(r.body.message).toContain("key");
+  });
+
+  it("models create 可缺 model（纯提供商条目，model 存空串）", async () => {
+    const { app } = makeApp();
+    const c = await call(app, "POST", "/api/models/create", { category: "llm", name: "prov", url: "http://x/v1", key: "sk-1" });
+    expect(c.status).toBe(200);
+    expect((c.body.data as { model: string }).model).toBe("");
+  });
+
+  it("models create 带清单：model 缺省时取清单首项，models 落库回显", async () => {
+    const { app } = makeApp();
+    const c = await call(app, "POST", "/api/models/create", { category: "llm", name: "p2", url: "http://x/v1", key: "sk-1", models: ["m-b", "m-a", "m-b"] });
+    const d = c.body.data as { model: string; models: string[]; modelMode: string };
+    expect(d.models).toEqual(["m-b", "m-a"]); // 保序去重
+    expect(d.model).toBe("m-b");
+    expect(d.modelMode).toBe("auto"); // 缺省 auto
+  });
+
+  it("models modelMode 持久化：manual 创建后回显，update 不传保持、传 auto 可切", async () => {
+    const { app } = makeApp();
+    const c = await call(app, "POST", "/api/models/create", { category: "llm", name: "pman", url: "http://x/v1", key: "sk-1", models: ["only-one"], modelMode: "manual" });
+    const id = (c.body.data as { id: string }).id;
+    expect((c.body.data as { modelMode: string }).modelMode).toBe("manual");
+    // 不传 modelMode → 保持原值
+    const u1 = await call(app, "POST", "/api/models/update", { id, models: ["only-one"] });
+    expect((u1.body.data as { modelMode: string }).modelMode).toBe("manual");
+    // 显式切 auto
+    const u2 = await call(app, "POST", "/api/models/update", { id, models: ["a", "b"], modelMode: "auto" });
+    expect((u2.body.data as { modelMode: string }).modelMode).toBe("auto");
+  });
+
+  it("models update 改清单：默认模型不在新清单则跟随首项", async () => {
+    const { app } = makeApp();
+    const c = await call(app, "POST", "/api/models/create", { category: "llm", name: "p3", url: "http://x/v1", key: "sk-1", models: ["old"] });
+    const id = (c.body.data as { id: string }).id;
+    const u = await call(app, "POST", "/api/models/update", { id, models: ["new1", "new2"] });
+    const d = u.body.data as { model: string; models: string[] };
+    expect(d.model).toBe("new1");
+    expect(d.models).toEqual(["new1", "new2"]);
+    // 默认模型仍在新清单内 → 保持不变
+    const u2 = await call(app, "POST", "/api/models/update", { id, models: ["new1", "x"] });
+    expect((u2.body.data as { model: string }).model).toBe("new1");
+  });
+
+  it("models fetch-list 读提供商 /models（mock 上游）", async () => {
+    const { app } = makeApp();
+    const c = await call(app, "POST", "/api/models/create", { category: "llm", name: "prov", url: "http://up.test/v1", key: "sk-1" });
+    const id = (c.body.data as { id: string }).id;
+    const orig = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (url: unknown, init?: { headers?: Record<string, string> }) => {
+        expect(String(url)).toBe("http://up.test/v1/models");
+        expect(init?.headers?.Authorization).toBe("Bearer sk-1");
+        return Response.json({ data: [{ id: "a" }, { id: "b" }, { id: "a" }] });
+      }) as typeof fetch;
+      const r = await call(app, "POST", "/api/models/fetch-list", { id });
+      expect((r.body.data as { models: string[]; count: number }).models).toEqual(["a", "b"]);
+      // 也支持未保存条目直传 url/key
+      const r2 = await call(app, "POST", "/api/models/fetch-list", { url: "http://up.test/v1/", key: "sk-2" });
+      expect((r2.body.data as { count: number }).count).toBe(2);
+      // 非标准响应 → 可读错误（502）
+      globalThis.fetch = (async () => Response.json({ weird: 1 })) as typeof fetch;
+      const r3 = await call(app, "POST", "/api/models/fetch-list", { id });
+      expect(r3.status).toBe(502);
+      expect(r3.body.message).toContain("手输");
+    } finally {
+      globalThis.fetch = orig;
+    }
   });
 
   it("models update 传空 key → 400", async () => {

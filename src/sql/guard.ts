@@ -197,13 +197,3 @@ export function assertReadOnlySql(sqlQuery: string): void {
   const blocked = BLOCKED_KEYWORD_RE.exec(normalized);
   if (blocked) throw new SqlGuardError(`SQL 语句中包含不允许的关键字: ${blocked[0]!.toUpperCase()}`);
 }
-
-/** 表名合法性校验（用于无法参数化的元数据查询，如 SQLite PRAGMA）。 */
-export function assertSafeIdentifier(name: string, label = "表名"): string {
-  const v = name.trim();
-  // 允许 schema.table / db.schema.table 形式（各库元数据查询通用），段内限字母数字下划线与 $
-  if (!/^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*){0,2}$/.test(v)) {
-    throw new SqlGuardError(`非法${label}: ${name}`);
-  }
-  return v;
-}

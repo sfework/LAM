@@ -5,7 +5,6 @@
  */
 
 import { localDateTimeStr } from "../infra/localtime.js";
-import { parseLlmJson } from "../utils/json.js";
 
 export interface ExtractMessage {
   id: string;
@@ -18,7 +17,7 @@ export interface ExtractMessage {
 export const L1_KINDS = ["persona", "episodic", "instruction", "fact", "method", "artifact"] as const;
 export type L1Kind = (typeof L1_KINDS)[number];
 
-export const EXTRACT_SYSTEM_PROMPT = `你是"情境切分与记忆提取专家"。分析对话，判断情境切换，并提取结构化核心记忆。
+export const EXTRACT_SYSTEM_PROMPT = (maxChars: number) => `你是"情境切分与记忆提取专家"。分析对话，判断情境切换，并提取结构化核心记忆。
 
 **输出语言**：scene_name 与 memory content 使用用户消息的主导语言；JSON 字段名、枚举值、时间戳保持英文。
 
@@ -34,6 +33,7 @@ export const EXTRACT_SYSTEM_PROMPT = `你是"情境切分与记忆提取专家"�
 2. 独立完整：跳出当前对话依然成立，无上下文也能看懂；主体用"用户"或项目名。
 3. 归纳合并：强关联或因果关系的多条消息，必须合并为一条完整记忆，不可碎片化。
 4. 时间：尽量基于消息 timestamp 推算绝对时间。
+5. 长度：单条 memory content 不超过 ${maxChars} 字符，超出必须拆分或精简。
 
 【类型（type，六选一）】
 - persona：用户稳定属性/偏好/技能/习惯（"用户喜欢/习惯…"）。priority 80-100 核心，50-70 一般，<50 丢弃。
@@ -49,7 +49,6 @@ export const EXTRACT_SYSTEM_PROMPT = `你是"情境切分与记忆提取专家"�
 [
   {
     "scene_name": "情境名",
-    "message_ids": ["属于该情境的消息ID"],
     "memories": [
       {
         "content": "完整、独立的记忆陈述",
@@ -67,10 +66,6 @@ metadata 字段说明：
 - 其他类型或无法确定时间：输出空对象 {}。
 
 无有意义记忆时也输出情境分割结果，memories 为空数组。`;
-
-export function getExtractSystemPrompt(_l1MaxChars?: number): string {
-  return EXTRACT_SYSTEM_PROMPT;
-}
 
 export function formatExtractionPrompt(params: {
   newMessages: ExtractMessage[];
@@ -126,9 +121,6 @@ export const CONFLICT_SYSTEM_PROMPT = `你是记忆冲突检测器。批量比�
 ]
 merged_priority：合并后信息更完整应酌情提升（80-100 核心，60-79 一般，<60 次要）。`;
 
-export function getConflictSystemPrompt(): string {
-  return CONFLICT_SYSTEM_PROMPT;
-}
 
 export interface ConflictCandidate {
   id: string;
@@ -224,10 +216,27 @@ export const PERSONA_SYSTEM_PROMPT = (maxChars: number) => `# 项目画像架构
 4. 经验内核：可复用的方法、踩过的坑、重要决策及原因。
 
 ## ⛔ 严格禁止
-- **总长度不超过 ${"MAX"} 字符**，及时总结、删除不重要信息。
+- **总长度不超过 ${maxChars} 字符**，及时总结、删除不重要信息。
 - **禁止过度推测**：没提到的信息不要臆想；冷启动阶段保持克制，可缺省章节。
 - **内容只能来自提供的记忆条目**，不得从路径/目录结构等元数据推断。
 - 不要输出 JSON、不要包裹代码块，只输出 Markdown 画像正文。
+
+## ⛔ 禁止写入易失真的过程信息（决策 87）
+画像是**稳定上下文**，每轮常驻注入；写成流水账会持续污染模型判断，且很快与代码脱节：
+
+1. **禁止记录版本号与计数**：如"画像版本 476""活跃记忆 68 条""配置项 39 个""工具 28 个"——
+   这些数字每次都在变，写进去必然过期。需要计数时用"约"或改为描述能力本身。
+2. **禁止记录对话过程与本次改动**：如"用户询问了…""本轮触发版本 475→476 覆盖更新""用户强调…流程"
+   —— 过程属于 L0/episodic，不属于画像。只写提炼后的结论与规则。
+3. **禁止用"重构中/待改进/痛点"描述当前任务状态**：写完即过时。要写就写已经生效的方案。
+4. **禁止记录临时参数或试错路径**：如"默认先设 100，若不行改 50"。只写最终采用的取值与理由。
+
+## ⛔ 功能移除后必须删除对应段落（决策 87）
+增量更新时，若新增记忆表明某项功能/机制/文件**已被移除或替换**（例如"已移除 X""X 改为 Y""X 不再是唯一路径"），
+必须**删除或改写画像中描述旧机制的整段内容**，不得保留"旧机制 + 新机制"并存：
+- 常见残留："A 负责…"其实已删除、"仅支持 A"其实已支持 B、配置项清单里已不存在的 key、已废弃的工具名。
+- 判断依据：新记忆明确使用"已移除 / 已删除 / 已替换 / 改为 / 不再"等措辞，或描述与画像现有描述直接冲突。
+- 冲突无法判断谁更新时，**以新增记忆为准**（时间更近），并在改写处只保留一套说法。
 
 ## 输出模板（信息不足可删减章节）
 # 项目画像
@@ -240,14 +249,12 @@ export const PERSONA_SYSTEM_PROMPT = (maxChars: number) => `# 项目画像架构
 ## 经验与踩坑
 `;
 
-export function getPersonaSystemPrompt(maxChars: number): string {
-  return PERSONA_SYSTEM_PROMPT(maxChars).replace("MAX", String(maxChars));
-}
-
 export function formatPersonaPrompt(params: {
   mode: "first" | "incremental";
   existingProfile?: string;
   changedMemories: { kind: string; content: string; createdAt: number }[];
+  /** 已被删除/替换的旧机制（决策 87）：供模型定位画像中需要清除的残留段落。 */
+  removedTopics?: string[];
 }): string {
   const memText = params.changedMemories
     .map((m) => `- [${m.kind}] ${m.content}`)
@@ -255,67 +262,10 @@ export function formatPersonaPrompt(params: {
   if (params.mode === "first") {
     return `【首次生成】以下是该项目的全部记忆，请凝练为项目画像：\n\n${memText}`;
   }
-  return `【增量更新】当前画像：\n\n${params.existingProfile ?? "（空）"}\n\n新增/变化的记忆：\n\n${memText}\n\n请基于当前画像做最小必要的更新。`;
-}
-
-// ── 过期记忆评审（DESIGN 决策 76）──
-
-/** 评审决策：delete 完全过时 / rewrite 部分过时（输出修剪正文）/ keep 仍有效。 */
-export interface ExpiryDecision {
-  id: string;
-  action: "delete" | "rewrite" | "keep";
-  /** rewrite 时给出的修剪后完整正文。 */
-  new_content?: string;
-}
-
-export const MEMORY_EXPIRY_SYSTEM_PROMPT = `你是"记忆时效性评审专家"。一批超过保留期的项目记忆需要你逐条评审，决定删除、修剪还是保留。
-
-**输出语言**：new_content 与原记忆条目同语言；JSON 字段名、枚举值保持英文。
-
-## 判定标准
-- **delete**：内容已完全失去参考价值——描述的事件/状态/决策早已结束或被推翻，一次性操作记录，
-  或引用的代码工件（文件/函数/配置）按常识已不可能仍存在（如"临时调试方案"）。
-- **rewrite**：条目中**部分**过时但仍含有效信息——输出修剪后的完整正文，只保留仍然有效的部分，
-  删掉过时片段；不得新增原条目没有的信息，不得改变原意，尽量沿用原文措辞。
-- **keep**：虽然超龄但仍是长期有效的约定/事实/方法（如"项目使用 pnpm 管理依赖"）；
-  或你无法确定其是否过时（**存疑一律 keep，宁保守勿误删**）。
-
-## 输出格式（严格 JSON 数组，无其他内容、无 markdown 修饰符）
-[
-  { "id": "原样回传条目 id", "action": "delete|rewrite|keep", "new_content": "仅 rewrite 时给出修剪后正文" }
-]
-
-必须为输入的每一条给出决策，id 原样回传，不得遗漏或臆造。`;
-
-export function getMemoryExpirySystemPrompt(): string {
-  return MEMORY_EXPIRY_SYSTEM_PROMPT;
-}
-
-export function formatExpiryPrompt(
-  items: { id: string; kind: string; content: string; ageDays: number }[],
-  today: string,
-): string {
-  const pool = items
-    .map((it) => `--- id=${it.id} | kind=${it.kind} | 已存在 ${it.ageDays} 天 ---\n${it.content}`)
-    .join("\n\n");
-  return `【评审日期】${today}
-
-【超龄记忆条目】（共 ${items.length} 条，逐条评审）：
-
-${pool}
-
-请输出决策 JSON 数组。`;
-}
-
-/** 解析评审输出（容忍对象包裹 {decisions:[...]} 的形态）；坏输出返回 null。 */
-export function parseExpiryDecisions(raw: string): ExpiryDecision[] | null {
-  const v = parseLlmJson<ExpiryDecision[] | { decisions?: ExpiryDecision[] }>(raw);
-  if (!v) return null;
-  const arr = Array.isArray(v) ? v : v.decisions;
-  if (!Array.isArray(arr)) return null;
-  const out = arr.filter(
-    (d): d is ExpiryDecision =>
-      !!d && typeof d.id === "string" && (d.action === "delete" || d.action === "rewrite" || d.action === "keep"),
-  );
-  return out.length ? out : null;
+  const removed = params.removedTopics?.length
+    ? `\n\n【本次涉及移除/替换的机制】（画像中若仍描述这些机制，必须删除或改写对应段落）：\n${params.removedTopics
+        .map((t) => `- ${t}`)
+        .join("\n")}`
+    : "";
+  return `【增量更新】当前画像：\n\n${params.existingProfile ?? "（空）"}\n\n新增/变化的记忆：\n\n${memText}${removed}\n\n请基于当前画像做最小必要的更新。`;
 }

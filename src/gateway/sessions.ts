@@ -75,11 +75,6 @@ export class SessionRepo {
       .run(snapshot, sessionKey);
   }
 
-  /** 回流后更新已处理消息数（阶段 5 消费）。 */
-  setHandledCount(sessionKey: string, count: number): void {
-    this.raw.prepare("UPDATE sessions SET handled_count = ? WHERE session_key = ?").run(count, sessionKey);
-  }
-
   /** TTL 过期判定：last_seen_at 距今超过 ttlMinutes。 */
   static isExpired(row: SessionRow, ttlMinutes: number, now: number): boolean {
     return now - row.lastSeenAt > ttlMinutes * 60_000;

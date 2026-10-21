@@ -24,13 +24,13 @@ const DB = process.env.DATA_DIR ? path.join(process.env.DATA_DIR, "gateway.db") 
 const KEEP = new Set(["models", "settings", "__migrations"]);
 // 顺序：先普通表，虚拟表（fts/vec）放后面统一清。
 const WIPE = [
-  "pipeline_state", "extract_queue", "sessions", "projects",
+  "pipeline_state", "sessions", "projects",
   "mem_l0", "mem_l1", "mem_l2",
-  "prompts", "agents", "skills", "knowledge", "denoise_rules",
-  "cg_calls", "cg_edges", "cg_symbols", "cg_files", "cg_status",
+  "prompts", "agents", "knowledge", "denoise_rules",
+  "extract_queue", "skills", "cg_calls", "cg_edges", "cg_symbols", "cg_files", "cg_status",
   "mem_l0_fts", "mem_l1_fts", "mem_l1_vec",
 ];
-// cg_* / skills 为已移除功能的遗留表（CodeGraph、技能）：存在则顺手清，不存在自动跳过。
+// extract_queue / skills / cg_* 为已移除功能的遗留表（针对未跑迁移的旧库）：存在则顺手清，不存在自动跳过。
 
 const yes = process.argv.includes("--yes");
 if (!yes) {

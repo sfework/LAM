@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { chatComplete, type LlmCallConfig, type LlmMessage, type LlmCallOptions } from "../llm/client.js";
 import { newId } from "../infra/id.js";
 import { createLogger } from "../infra/logger.js";
-import { getPersonaSystemPrompt, formatPersonaPrompt } from "./prompts.js";
+import { PERSONA_SYSTEM_PROMPT, formatPersonaPrompt } from "./prompts.js";
 import { L1Store } from "./l1-store.js";
 import type { SettingsService } from "../settings/service.js";
 
@@ -97,13 +97,14 @@ export class L2Refiner {
       out = await this.llmCall(
         llm,
         [
-          { role: "system", content: getPersonaSystemPrompt(maxChars) },
+          { role: "system", content: PERSONA_SYSTEM_PROMPT(maxChars) },
           {
             role: "user",
             content: formatPersonaPrompt({
               mode: existing ? "incremental" : "first",
               existingProfile: existing?.content,
               changedMemories: active.map((m) => ({ kind: m.kind, content: m.content, createdAt: m.createdAt })),
+              removedTopics: collectRemovedTopics(active.map((m) => m.content)),
             }),
           },
         ],
@@ -190,6 +191,32 @@ export class L2Refiner {
     log.debug({ projectId }, "L2 画像首次保存（管理端）");
     return { changed: true, version: 1 };
   }
+}
+
+/**
+ * 从新增记忆里识别"被移除/替换的机制"（决策 87）：供画像凝练时定位残留段落。
+ *
+ * 只做**文本线索**提取（零 LLM）：命中"已移除/已删除/已替换/改为/不再/已下线"等措辞的句子，
+ * 截取到句读为止，作为 removedTopics 投喂给模型，提示它删掉画像里对旧机制的描述。
+ * 提取宽松、判定严格：模型仍须自行确认画像中是否真存在对应段落。
+ */
+export function collectRemovedTopics(contents: readonly string[], limit = 8): string[] {
+  const cues = /(?:已移除|已删除|已替换|已下线|已废弃|不再|改为|替换为|移出|取消)/;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const text of contents) {
+    // 按句读切句，避免把整条长记忆塞进提示词
+    for (const raw of text.split(/(?<=[。；;！!\n])/)) {
+      const s = raw.trim();
+      if (!s || s.length < 6 || !cues.test(s)) continue;
+      const key = s.slice(0, 24);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(s.length > 120 ? `${s.slice(0, 120)}…` : s);
+      if (out.length >= limit) return out;
+    }
+  }
+  return out;
 }
 
 /**

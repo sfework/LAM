@@ -5,11 +5,9 @@ import { normalizeProjectPath } from "../projects/normalize.js";
 import { parseWorkspacePath } from "../projects/parse-workspace.js";
 import type { DenoiseRepo } from "../denoise/repo.js";
 import { denoiseMessages } from "../denoise/engine.js";
-import type { AssetsRepo } from "../assets/repo.js";
 import type { SettingsService } from "../settings/service.js";
 import { SessionRepo, deriveSessionKey } from "./sessions.js";
-import { SnapshotBuilder } from "./snapshot.js";
-import { injectSnapshot } from "./snapshot.js";
+import { SnapshotBuilder, injectSnapshot } from "./snapshot.js";
 import { chatCompletionsAdapter, firstUserText, type ChatMessage } from "./protocol.js";
 import { forwardChat } from "./forwarder.js";
 import type { L0Recorder } from "../memory/l0-recorder.js";
@@ -23,7 +21,6 @@ const log = createLogger("gateway");
 export interface GatewayDeps {
   projects: ProjectRepo;
   denoise: DenoiseRepo;
-  assets: AssetsRepo;
   settings: SettingsService;
   sessions: SessionRepo;
   snapshot: SnapshotBuilder;
@@ -118,7 +115,7 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
           "本轮聚合完成",
         );
         // final answer → L0 回流（始终写 L0 + 累积调度器状态；
-        // extraction_enabled 在阶段 6 调度器决定是否真正提取）
+        // 调度器按轮数阈值决定何时真正提取，提取常驻开启）
         // 降级通道（无项目归属）不回流的 L0：无法按项目隔离，且多为 compact 等元请求
         if (agg.final && project.projectId) {
           // 用原始请求消息（未除噪）：recorder 内部按 memory 通道除噪 + 游标对齐
