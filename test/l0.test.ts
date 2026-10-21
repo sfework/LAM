@@ -15,7 +15,7 @@ function fresh() {
   ensureFtsTables(raw);
   const projects = new ProjectRepo(raw);
   const sessions = new SessionRepo(raw);
-  const l0 = new L0Recorder(raw, true);
+  const l0 = new L0Recorder(raw);
   const { project } = projects.upsertOnRequest("d:/work/p");
   return { raw, l0, sessions, projectId: project.id };
 }

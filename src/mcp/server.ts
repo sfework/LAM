@@ -73,14 +73,14 @@ export function buildMcpServer(call: InternalCaller): Server {
     const name = req.params.name;
     const args = (req.params.arguments ?? {}) as Record<string, unknown>;
     const start = Date.now();
-    // 审计日志：每次 callTool 记一条（工具名 / 项目路径 / 入参 / 结果 / 耗时）。
-    // 按用户要求原样记录入参（含 SQL 工具连接串），日志文件即含敏感口令，仅本地使用。
-    const audit = (status: "ok" | "error" | "denied" | "unknown" | "limited", extra?: Record<string, unknown>) =>
-      log.info({ tool: name, projectPath: args.project_path ?? null, args, status, ms: Date.now() - start, ...extra }, "MCP callTool");
+    // 日志规范：常规工具调用不再落盘（调用本身在 /internal 与记忆链路日志里可回溯），
+    // 仅异常记 error。原样带上入参便于定位（含 SQL 连接串，日志文件仅本地使用）。
+    const fail = (msg: string, extra?: Record<string, unknown>) =>
+      log.error({ tool: name, projectPath: args.project_path ?? null, args, ms: Date.now() - start, ...extra }, msg);
 
     const def = TOOL_DEFS.find((t) => t.name === name);
     if (!def) {
-      audit("unknown");
+      fail("MCP 未知工具");
       return { ...textContent(`未知工具: ${name}`), isError: true };
     }
 
@@ -89,7 +89,6 @@ export function buildMcpServer(call: InternalCaller): Server {
       const key = String(args.project_path ?? "_");
       const { allowed, used } = limiter.take(key);
       if (!allowed) {
-        audit("limited", { used });
         return textContent(
           `已达本轮检索上限（${SEARCH_FAMILY_LIMIT} 次，当前第 ${used} 次）。该信息可能不在记忆中，请停止继续检索，基于已有信息作答。`,
         );
@@ -100,17 +99,14 @@ export function buildMcpServer(call: InternalCaller): Server {
     try {
       resp = await call(def.endpoint, args);
     } catch (err) {
-      audit("error", { err: String(err) });
+      fail("MCP 调用内部 API 失败", { err: String(err) });
       return { ...textContent(`调用内部 API 失败：${String(err)}`), isError: true };
     }
 
     if (!resp.ok) {
-      audit("error", { message: resp.error?.message ?? "unknown" });
+      fail("MCP 工具返回错误", { message: resp.error?.message ?? "unknown" });
       return { ...textContent(`错误：${resp.error?.message ?? "unknown"}`), isError: true };
     }
-    // SQL 工具把校验/查询失败作为 { error } 数据返回（ok:true），审计里标 denied 便于统计被拒查询。
-    const sqlError = typeof resp.data === "object" && resp.data !== null && "error" in resp.data;
-    audit(sqlError ? "denied" : "ok");
     return textContent(formatData(resp.data));
   });
 

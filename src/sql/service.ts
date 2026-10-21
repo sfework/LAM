@@ -10,11 +10,8 @@
  * 工具输出直接进模型上下文，无上限的 SELECT * 会瞬间撑爆窗口。
  */
 
-import { createLogger } from "../infra/logger.js";
 import { Dialects, describeDriverError, type SqlDialect } from "./drivers.js";
 import { SqlGuardError, assertReadOnlySql } from "./guard.js";
-
-const log = createLogger("sql");
 
 /** 兜底行数上限（settings 不可用时；与注册表默认值一致）。 */
 const DEFAULT_MAX_ROWS = 200;
@@ -63,7 +60,6 @@ export class SqlService {
 
     const truncated = rows.length > maxRows;
     const kept = truncated ? rows.slice(0, maxRows) : rows;
-    if (truncated) log.debug({ dialect, total: rows.length, maxRows }, "SQL 查询结果被截断");
     return { rows: kept, rowCount: rows.length, truncated, maxRows };
   }
 

@@ -76,7 +76,6 @@ export function createInternalRouter(deps: InternalDeps): Hono {
     if (!Object.keys(input).length) return bad(c, "title/description/body 至少传一个非空值");
     const updated = deps.assets.updateKnowledge(id, input);
     if (!updated) return notFound(c, "knowledge", id);
-    log.info({ id, fields: Object.keys(input) }, "MCP 更新知识条目");
     return ok(c, { id: updated.id, title: updated.title, description: updated.description, scope: updated.scope });
   });
   /**
@@ -101,7 +100,6 @@ export function createInternalRouter(deps: InternalDeps): Hono {
       projectId: scope === "project" ? projectId : null,
       enabled: true,
     });
-    log.info({ id: k.id, scope, projectId }, "MCP 创建知识条目");
     return ok(c, { id: k.id, title: k.title, description: k.description, scope: k.scope });
   });
   /**
@@ -156,7 +154,6 @@ export function createInternalRouter(deps: InternalDeps): Hono {
     if (!Object.keys(input).length) return bad(c, "name/description/body 至少传一个非空值");
     const updated = deps.assets.updateAgent(id, input);
     if (!updated) return notFound(c, "agent", id);
-    log.info({ id, fields: Object.keys(input) }, "MCP 更新 Agent 定义");
     return ok(c, { id: updated.id, name: updated.name, description: updated.description });
   });
   /**
@@ -171,7 +168,6 @@ export function createInternalRouter(deps: InternalDeps): Hono {
     const description = typeof b?.description === "string" ? b.description.trim() : "";
     if (!name || !body) return bad(c, "name 与 body 必填");
     const a = deps.assets.createAgent({ name, description, body, enabled: true });
-    log.info({ id: a.id, name }, "MCP 创建 Agent 定义");
     return ok(c, { id: a.id, name: a.name, description: a.description });
   });
   /** 删除 Agent 定义（MCP agent_delete 用，决策 83）：物理删除；Agent 为全局资产，删除记 WARN 强化审计。 */
@@ -271,7 +267,6 @@ export function createInternalRouter(deps: InternalDeps): Hono {
       }
     }
     const applied = results.filter((r) => r.ok).length;
-    log.info({ projectId, batch: results.length, applied }, "MCP 批量改写记忆");
     return ok(c, { results, applied, skipped: results.length - applied });
   });
   /**
@@ -301,7 +296,6 @@ export function createInternalRouter(deps: InternalDeps): Hono {
         failures.push({ id, ok: false, error: String(err) });
       }
     }
-    log.info({ projectId, batch: rawIds.length, applied, failed: failures.length }, "MCP 批量删除记忆");
     return ok(c, { results: failures, applied, skipped: rawIds.length - applied });
   });
   app.get("/memory/profile", (c) => {
@@ -322,7 +316,6 @@ export function createInternalRouter(deps: InternalDeps): Hono {
     const content = typeof b?.content === "string" ? b.content.trim() : "";
     if (!content) return bad(c, "content 需为非空字符串");
     const { changed, version } = deps.l2.save(projectId, content);
-    log.info({ projectId, version, changed }, "MCP 保存 L2 画像");
     return ok(c, { changed, version });
   });
 
@@ -368,10 +361,7 @@ function resolveProjectId(deps: InternalDeps, c: Context): string | null {
   if (!rawPath) return null;
   const norm = normalizeProjectPath(rawPath);
   const p = deps.projects.findByPath(norm);
-  if (!p) {
-    log.debug({ rawPath, norm }, "内部 API：project_path 未匹配到项目");
-    return null;
-  }
+  if (!p) return null;
   return p.id;
 }
 

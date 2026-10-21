@@ -51,7 +51,6 @@ export function runMigrations(raw: DatabaseSync): void {
   }
 
   const journal = loadJournal(dir);
-  let count = 0;
   const ins = raw.prepare("INSERT INTO __migrations (idx, name, applied_at) VALUES (?, ?, ?)");
 
   for (const entry of journal) {
@@ -71,13 +70,9 @@ export function runMigrations(raw: DatabaseSync): void {
       for (const stmt of statements) raw.exec(stmt);
       ins.run(entry.idx, entry.tag, Date.now());
       raw.exec("COMMIT");
-      count++;
-      log.debug({ tag: entry.tag }, "迁移已应用");
     } catch (err) {
       raw.exec("ROLLBACK");
       throw new Error(`迁移 ${entry.tag} 失败: ${String(err)}`);
     }
   }
-
-  if (count === 0) log.debug("数据库结构已是最新");
 }

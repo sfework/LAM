@@ -47,9 +47,11 @@ const DISCLAIMER = "以下是与本轮用户问题相关的项目记忆（按相
  * 块尾自维护提示（决策 88）：Agent 只看得见本轮 top-K，因此**只授权改/删它刚读到的条目**，
  * 明确禁止新增——新增仍由后台 L0→L1 提取 + 冲突检测负责，避免"看不到库里已有同义条目
  * 就重复插入"导致的重复膨胀。固定文案，随块一起进缓存（同检索词字节一致，不破坏 KV cache）。
+ * 决策 90：条目行首方括号内已带记忆 id，此处点明其含义——两个批量工具都以 id 为主键，
+ * 不给 id 则 Agent 无法定位条目，对话内修正这条腿实际空转。
  */
 const MAINTAIN_HINT =
-  "任务完成后若发现上述条目有错/过时，用 memory_batch_update 改写或 memory_batch_delete 删除（仅限以上条目）；不要新增记忆，新事实由后台提取管线负责。";
+  "任务完成后若发现上述条目有错/过时，用 memory_batch_update 改写或 memory_batch_delete 删除（仅限以上条目）；条目方括号内首项即记忆 id，作为上述工具的入参原样传入，不要截断；不要新增记忆，新事实由后台提取管线负责。";
 
 export class MemoryRecaller {
   private readonly store: L1Store;
@@ -231,13 +233,16 @@ function applyBm25Floor<T extends { score: number; source: "bm25" | "vec" | "bot
 /**
  * 渲染召回块（决策：取消 l1_recall_max_chars* 预算截断）：命中条目全量逐行渲染，
  * 条数上限由 l1_recall_top_k 控制，单条长度由提取侧 l1_max_chars 约束。
+ * 决策 90：行首方括号内带**全量记忆 id**（不可截断，Agent 要拿它做批量工具入参），
+ * 格式 `[id:xxx,type:xxx,score:x.xxx]`。成本可忽略（约 20 字符 × topK），
+ * 且同检索词命中缓存后字节一致，不破坏 KV cache 前缀。
  */
 function renderBlock(
-  hits: { record: { kind: string; content: string }; score: number }[],
+  hits: { record: { id: string; kind: string; content: string }; score: number }[],
 ): string {
   const lines = [`<recalled>`, DISCLAIMER];
   hits.forEach((h, n) => {
-    lines.push(`${n + 1}. [${h.record.kind} score=${h.score.toFixed(3)}] ${h.record.content}`);
+    lines.push(`${n + 1}. [id:${h.record.id},type:${h.record.kind},score:${h.score.toFixed(3)}] ${h.record.content}`);
   });
   lines.push(MAINTAIN_HINT);
   lines.push(`</recalled>`);

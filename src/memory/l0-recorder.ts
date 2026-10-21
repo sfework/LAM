@@ -2,7 +2,6 @@ import type { DatabaseSync } from "node:sqlite";
 import type { ChatMessage } from "../gateway/protocol.js";
 import { denoiseMessages, type DenoiseRuleData } from "../denoise/engine.js";
 import { shouldCaptureL0 } from "./sanitize.js";
-import { tokenizeForFts } from "./tokenize.js";
 import { newId } from "../infra/id.js";
 import { createLogger } from "../infra/logger.js";
 import type { AssistantAggregate } from "../gateway/forwarder.js";
@@ -29,23 +28,16 @@ export interface L0Row {
  */
 export class L0Recorder {
   private readonly raw: DatabaseSync;
-  private readonly ftsAvailable: boolean;
 
-  constructor(raw: DatabaseSync, ftsAvailable = true) {
+  constructor(raw: DatabaseSync) {
     this.raw = raw;
-    this.ftsAvailable = ftsAvailable;
   }
 
-  /** 写入 mem_l0 行 + 同步 FTS 索引（ftsAvailable 时）。 */
+  /** 写入 mem_l0 行（L0 不参与检索，无 FTS 索引）。 */
   private insertL0(id: string, projectId: string, sessionKey: string, seq: number, role: "user" | "assistant", text: string, ts: number): void {
     this.raw
       .prepare("INSERT INTO mem_l0 (id, project_id, session_key, turn_seq, role, content, created_at, deleted_at) VALUES (?,?,?,?,?,?,?,NULL)")
       .run(id, projectId, sessionKey, seq, role, text, ts);
-    if (this.ftsAvailable) {
-      this.raw
-        .prepare("INSERT INTO mem_l0_fts (content, l0_id, project_id) VALUES (?,?,?)")
-        .run(tokenizeForFts(text), id, projectId);
-    }
   }
 
   /**
@@ -137,9 +129,6 @@ export class L0Recorder {
       }
 
       this.raw.exec("COMMIT");
-      if (insertedIds.length) {
-        log.debug({ projectId, sessionKey, count: insertedIds.length, turnSeq: seq - 1 }, "L0 回流完成");
-      }
       return insertedIds;
     } catch (err) {
       this.raw.exec("ROLLBACK");
@@ -171,13 +160,12 @@ export class L0Recorder {
   }
 
   /**
-   * 管理端单条删除 = 物理删除（DESIGN 决策 56）：删 mem_l0 行 + 移出 FTS。
+   * 管理端单条删除 = 物理删除（DESIGN 决策 56）：删 mem_l0 行。
    * L1 的 sourceL0Ids 溯源保留（查不到即不显示）。
    * （项目级联软删走 ProjectRepo，另行处理，与此不同。）
    */
   remove(id: string): boolean {
     if (!this.raw.prepare("SELECT id FROM mem_l0 WHERE id = ?").get(id)) return false;
-    if (this.ftsAvailable) this.raw.prepare("DELETE FROM mem_l0_fts WHERE l0_id = ?").run(id);
     const res = this.raw.prepare("DELETE FROM mem_l0 WHERE id = ?").run(id);
     return Number(res.changes) > 0;
   }

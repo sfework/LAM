@@ -9,9 +9,6 @@ import {
 } from "./registry.js";
 import type { ModelRepo } from "../models/repo.js";
 import type { LlmCallConfig } from "../llm/client.js";
-import { createLogger } from "../infra/logger.js";
-
-const log = createLogger("settings");
 
 /**
  * 解析 modelRef 绑定值：`mdl_xxx` 或 `mdl_xxx:model-name`。
@@ -63,7 +60,6 @@ export class SettingsService {
         this.cache.set(def.key, def.defaultValue);
       }
     }
-    log.debug({ count: this.cache.size }, "设置已载入（缺失项回填默认值）");
   }
 
   /** 读取强类型值（热更新：每次读缓存，缓存随写入实时更新）。 */
@@ -171,7 +167,6 @@ export class SettingsService {
       .prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at")
       .run(key, value, now);
     this.cache.set(key, value);
-    log.debug({ key, value }, "设置已热更新");
     return { key, value, updatedAt: now };
   }
 

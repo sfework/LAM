@@ -215,10 +215,13 @@ export class L1Extractor {
         projectId,
         path: this.pathOf?.(projectId) ?? "",
         sessionKey: sessionKey ?? "",
+        // 规范日志三类之一：本批消费的 L0（输入侧全量 id）
+        l0Ids,
         extracted: pending.length,
         stored,
         skipped,
-        memories: pending.map((p) => ({ kind: p.kind, priority: p.priority, content: p.content })),
+        // 规范日志三类之一：提炼出的 L1（含各自的来源 L0 id）
+        memories: pending.map((p) => ({ kind: p.kind, priority: p.priority, content: p.content, sourceL0Ids: p.sourceL0Ids })),
         tokens: usage,
       },
       "L1 提取完成（L0→L1）",

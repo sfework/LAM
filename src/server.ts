@@ -128,7 +128,7 @@ export function bootstrap(): {
   const assets = new AssetsRepo(handle.raw);
   const sessions = new SessionRepo(handle.raw);
   const snapshot = new SnapshotBuilder(assets);
-  const l0 = new L0Recorder(handle.raw, handle.fts5Available);
+  const l0 = new L0Recorder(handle.raw);
   const l1Store = new L1Store(handle.raw, handle.fts5Available, handle.vecAvailable);
   const l1Extractor = new L1Extractor(handle.raw, l1Store, settings);
   const l2 = new L2Refiner(handle.raw, l1Store, settings);
@@ -161,22 +161,15 @@ async function main(): Promise<void> {
   const host = listenHost();
   const server = serve({ fetch: app.fetch, port, hostname: host });
 
-  log.info(
-    { host, port, dataDir: dataDir(), node: process.version },
-    `服务已启动: http://${host}:${port} (health: /health)`,
-  );
-
   // 优雅关停：flush 后台任务 → 关 HTTP → 关 DB。
   let shuttingDown = false;
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    log.info({ signal }, "收到关停信号，开始优雅退出…");
     server.close(async (err) => {
       if (err) log.error({ err: String(err) }, "HTTP server 关闭异常");
       await background.stop();
       handle.close();
-      log.info("已退出。");
       process.exit(0);
     });
     // 兜底：5s 内未关完强制退出

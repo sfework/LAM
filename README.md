@@ -206,7 +206,8 @@ MCP Server 挂在同一端口：**`http://localhost:8790/mcp`**（Streamable HTT
 
 ## 数据与运维
 
-- 全部数据集中在 `data/` 目录：主库 `data/gateway.db`（WAL 模式）、日志 `Logs/`（或 `data/Logs/`，按 `yyyy/MM/dd/HH.txt` 小时滚动）。
+- 全部数据集中在 `data/` 目录：主库 `data/gateway.db`（WAL 模式）、日志 `data/Logs/`（应用日志按 `yyyy/MM/dd/HH.txt` 小时滚动，进程 stdout/stderr 在 `data/Logs/service/`）。
+- **日志面规范**：常规信息只落三类——L1 提取（用了哪些 L0、产出哪些 L1）、L2 凝练（用了哪些 L1、画像产出全文）、L1 召回注入（用户发言与注入记忆全文）；其余仅落异常与降级告警，常规操作不写日志。临时排查可设 `LOG_LEVEL=debug`。
 - **备份 / 迁移 = 停服后拷走这些目录**；在线一致性快照可手工执行 `VACUUM INTO`。恢复：停服 → 用备份覆盖 `gateway.db`（删同名 `-wal` / `-shm`）→ 重启。
 - **崩溃恢复无需人工干预**：提取游标与缓冲全部持久化在 `pipeline_state`，重启后后台任务自动续跑；进程被强杀也不丢在途批次（缓冲在批次成功后才按差集清理）。
 - 清空业务数据（保留模型库与设置）：停服后 `node scripts/wipe-data.mjs --yes`。
@@ -218,7 +219,7 @@ Install-Service.bat             双击运行，自动 UAC 提权；首次会下�
 Install-Service.bat uninstall   卸载
 ```
 
-服务名 `LocalAgentMemory`，异常退出 5 秒自动重启，进程 stdout/stderr 落在 `Logs/service/`。
+服务名 `LocalAgentMemory`，异常退出 5 秒自动重启，进程 stdout/stderr 落在 `data/Logs/service/`（10MB 轮转）。
 
 ## 开发指南
 

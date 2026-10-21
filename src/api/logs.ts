@@ -88,7 +88,6 @@ export function createLogsRouter() {
         log.error({ err: String(err), full }, "日志删除失败");
         badRequest(`删除失败: ${String(err)}`);
       }
-      log.debug({ full }, "日志文件已删除");
       return { deleted: true };
     },
   });

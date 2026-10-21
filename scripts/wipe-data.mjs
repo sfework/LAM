@@ -30,7 +30,7 @@ const WIPE = [
   "extract_queue", "skills", "cg_calls", "cg_edges", "cg_symbols", "cg_files", "cg_status",
   "mem_l0_fts", "mem_l1_fts", "mem_l1_vec",
 ];
-// extract_queue / skills / cg_* 为已移除功能的遗留表（针对未跑迁移的旧库）：存在则顺手清，不存在自动跳过。
+// extract_queue / skills / cg_* / mem_l0_fts 为已移除功能的遗留表（针对未跑迁移的旧库）：存在则顺手清，不存在自动跳过。
 
 const yes = process.argv.includes("--yes");
 if (!yes) {

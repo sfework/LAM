@@ -70,7 +70,6 @@ export class L2Refiner {
   ): Promise<RefineResult> {
     const all = this.store.listActive(projectId);
     if (!all.length) {
-      log.debug({ projectId }, "无活跃 L1，跳过画像凝练");
       return { status: "skipped", version: this.get(projectId)?.version ?? 0 };
     }
     const existing = this.get(projectId);
@@ -83,7 +82,6 @@ export class L2Refiner {
       const watermark = watermarkMs ?? existing.updated_at;
       const changed = all.filter((m) => m.createdAt > watermark);
       if (!changed.length) {
-        log.debug({ projectId, version: existing.version }, "L2 无新增 L1，跳过凝练");
         return { status: "skipped", version: existing.version };
       }
       active = changed;
@@ -135,13 +133,16 @@ export class L2Refiner {
     // 结果比对：规范化后与现有画像一致 → 不写库、不涨版本。
     // 逐字比对对 LLM 输出的空白/换行/标点抖动过于敏感，会凭空涨 version（决策 71）。
     if (existing && normalizeProfile(existing.content) === normalizeProfile(profile)) {
-      log.debug({ projectId, version: existing.version, l1Count: active.length, tokens }, "L2 画像凝练无变化，跳过写入");
       return { status: "unchanged", version: existing.version };
     }
+    // 规范日志三类之二：记录本次凝练使用的 L1 与画像产出全文
     const base = {
       projectId,
       path: this.pathOf?.(projectId) ?? "",
+      mode,
       l1Count: active.length,
+      usedL1: active.map((m) => ({ id: m.id, kind: m.kind, priority: m.priority, content: m.content })),
+      profile,
       tokens,
     };
     if (existing) {
@@ -182,13 +183,11 @@ export class L2Refiner {
     if (existing) {
       const version = existing.version + 1;
       this.raw.prepare("UPDATE mem_l2 SET content = ?, version = ?, updated_at = ? WHERE id = ?").run(content, version, now, existing.id);
-      log.debug({ projectId, version }, "L2 画像已由管理端保存");
       return { changed: true, version };
     }
     this.raw
       .prepare("INSERT INTO mem_l2 (id, project_id, content, version, updated_at, deleted_at) VALUES (?,?,?,1,?,NULL)")
       .run(newId("l2"), projectId, content, now);
-    log.debug({ projectId }, "L2 画像首次保存（管理端）");
     return { changed: true, version: 1 };
   }
 }

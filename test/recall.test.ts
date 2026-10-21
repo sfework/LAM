@@ -165,16 +165,19 @@ describe.skipIf(!VEC_OK)("EmbeddingBackfiller", () => {
 describe("MemoryRecaller", () => {
   it("BM25 命中渲染 <recalled> 块", async () => {
     const ctx = fresh(false);
-    ctx.store.insert(ctx.projectId, mk("用户偏好使用 pnpm 管理依赖", "persona", 90));
+    const id = ctx.store.insert(ctx.projectId, mk("用户偏好使用 pnpm 管理依赖", "persona", 90));
     const recaller = new MemoryRecaller(ctx.store, ctx.settings);
     const { block, count } = await recaller.recall(ctx.projectId, ["我该怎么管理依赖？pnpm 还是 npm"]);
     expect(count).toBe(1);
     expect(block).toContain("<recalled>");
     expect(block).toContain("仅用于辅助回答当前这一轮");
-    expect(block).toContain("[persona");
+    // 决策 90：行首方括号内带全量记忆 id（批量工具入参），格式 [id:xxx,type:xxx,score:x.xxx]
+    expect(block).toContain(`[id:${id},type:persona,score:`);
     expect(block).toContain("pnpm");    // 决策 88：块尾自维护提示——只授权改/删本轮条目，新增仍走提取管线
     expect(block).toContain("memory_batch_update");
-    expect(block).toContain("不要新增记忆");  });
+    expect(block).toContain("不要新增记忆");
+    expect(block).toContain("记忆 id"); // 决策 90：提示中点明方括号内首项即 id
+  });
 
   it("l1_recall_top_k 限制注入条数上限", async () => {
     const ctx = fresh(false);

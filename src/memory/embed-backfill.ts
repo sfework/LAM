@@ -42,7 +42,6 @@ export class EmbeddingBackfiller {
         const v = vecs[i];
         if (v) this.store.upsertVector(missing[i]!.id, projectId, v);
       }
-      log.debug({ projectId, count: missing.length }, "补嵌入完成");
       return missing.length;
     } catch (err) {
       log.warn({ projectId, err: String(err) }, "补嵌入失败（下轮重试）");

@@ -37,7 +37,7 @@ function makeInternal() {
   const assets = new AssetsRepo(raw);
   const sessions = new SessionRepo(raw);
   const snapshot = new SnapshotBuilder(assets);
-  const l0 = new L0Recorder(raw, true);
+  const l0 = new L0Recorder(raw);
   const l1Store = new L1Store(raw, true, false);
   const l2 = new L2Refiner(raw, l1Store, settings);
   const recaller = new MemoryRecaller(l1Store, settings);

@@ -42,6 +42,12 @@ export class ExtractionScheduler {
   // 在途批次（pipeline_state.id）：处理期间 DB 缓冲不再提前清空（防进程被 kill 丢批），
   // 靠此内存集合防止 tick 重复入队同一行（决策 72）。
   private readonly inFlight = new Set<string>();
+  // L2 在途项目集：refine 入队后在水位推进前，后续 tick 仍会判定"有新 L1"，
+  // 无此集合会重复入队同一项目的凝练（LLM 成本翻倍）。
+  private readonly l2InFlight = new Set<string>();
+  // tick 重入闸门：tick 内含 backfill 等 IO（embedBatch 超时上限远超 5s 间隔），
+  // 上一轮未结束时跳过本轮，防同一批缺失向量被并发多次向量化。
+  private ticking = false;
 
   constructor(
     raw: DatabaseSync,
@@ -61,7 +67,6 @@ export class ExtractionScheduler {
     if (this.timer) return;
     this.timer = setInterval(() => void this.tick(), intervalMs);
     this.timer.unref();
-    log.debug({ intervalMs }, "提取调度器已启动");
   }
 
   /** 关停：停止 tick 并 flush 全部缓冲。 */
@@ -71,7 +76,6 @@ export class ExtractionScheduler {
     await this.flushAll();
     // 等在途任务收尾
     await Promise.allSettled([...this.projectChains.values()]);
-    log.debug("提取调度器已停止（缓冲已 flush）");
   }
 
   private memoryLlm(): LlmCallConfig | null {
@@ -95,6 +99,18 @@ export class ExtractionScheduler {
 
   /** 单次调度扫描（写侧提取常驻开启，无总闸；memory_llm 未绑定时自然停摆）。返回本轮入队的提取批次数（便于测试断言）。 */
   async tick(): Promise<number> {
+    // 重入保护：backfill 含网络 IO（可达数十秒），上一轮未结束时跳过本轮，
+    // 防同一批缺失向量被并发重复向量化（LLM/embedding 成本翻倍）。
+    if (this.ticking) return 0;
+    this.ticking = true;
+    try {
+      return await this.tickInner();
+    } finally {
+      this.ticking = false;
+    }
+  }
+
+  private async tickInner(): Promise<number> {
     // 补嵌入（用 embedding_model，独立于 memory_llm）
     await this.runBackfill();
 
@@ -140,7 +156,7 @@ export class ExtractionScheduler {
 
   private async runL1(row: PipelineRow, buffered: string[], llm: LlmCallConfig): Promise<void> {
     try {
-      const res = await this.l1.extract(row.project_id, buffered, llm, row.session_key);
+      await this.l1.extract(row.project_id, buffered, llm, row.session_key);
       // 成功：从 DB 当前缓冲里按差集移除本批已处理 id（保留处理期间新到的），据此重算计数。
       const cur = this.raw.prepare("SELECT buffered_message_ids, conversation_count FROM pipeline_state WHERE id = ?").get(row.id) as
         | { buffered_message_ids: string; conversation_count: number }
@@ -151,7 +167,6 @@ export class ExtractionScheduler {
       this.raw
         .prepare("UPDATE pipeline_state SET buffered_message_ids = ?, conversation_count = ? WHERE id = ?")
         .run(JSON.stringify(remaining), remainingCount, row.id);
-      log.debug({ projectId: row.project_id, ...res }, "L1 批次完成");
     } catch (err) {
       // 失败：DB 缓冲从未被提前清空，本批消息（含处理期间新到的）原样留在 buffered_message_ids，
       // 下轮 tick（或重启后）自动重试，无需回填（决策 72）。
@@ -181,7 +196,9 @@ export class ExtractionScheduler {
       const lastL2 = p.last_l2 ?? 0;
       const hasNewSinceL2 = lastL1 > lastL2;
       if (!(hasNewSinceL2 && now - lastL1 >= delayMs)) continue;
+      if (this.l2InFlight.has(p.project_id)) continue; // 该项目凝练仍在途，防重复入队刷 LLM
 
+      this.l2InFlight.add(p.project_id);
       this.enqueueProject(p.project_id, async () => {
         try {
           // 增量水位 = 上次 L2 凝练时刻（手动保存画像不影响水位）
@@ -194,6 +211,8 @@ export class ExtractionScheduler {
           }
         } catch (err) {
           log.warn({ projectId: p.project_id, err: String(err) }, "L2 凝练失败");
+        } finally {
+          this.l2InFlight.delete(p.project_id);
         }
       });
     }

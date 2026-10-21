@@ -78,9 +78,16 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
         const { block, items } = await deps.recaller.recall(project.projectId, recentUsers.map((m) => m.content));
         if (block) finalMessages = prependRecall(withSnapshot, block);
         if (items.length) {
+          // 规范日志三类之一：记录触发召回的用户发言与注入的记忆全文。
           log.info(
-            { projectId: project.projectId, path: project.path, userMessage: lastUser.content, recalled: items },
-            "L1 召回：注入命中记忆",
+            {
+              projectId: project.projectId,
+              path: project.path,
+              userMessage: String(lastUser.content),
+              count: items.length,
+              recalled: items.map((i) => ({ id: i.id, kind: i.kind, score: i.score, source: i.source, content: i.content })),
+            },
+            "L1 召回注入",
           );
         }
       }
@@ -110,10 +117,6 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
     // 9. 旁路聚合 → final answer 时 L0 回流（fire-and-forget，不阻塞响应）
     result.aggregate
       .then((agg) => {
-        log.debug(
-          { projectId: project.projectId, textLen: agg.text.length, toolCalls: agg.toolCallCount, final: agg.final },
-          "本轮聚合完成",
-        );
         // final answer → L0 回流（始终写 L0 + 累积调度器状态；
         // 调度器按轮数阈值决定何时真正提取，提取常驻开启）
         // 降级通道（无项目归属）不回流的 L0：无法按项目隔离，且多为 compact 等元请求
@@ -185,8 +188,7 @@ function resolveProject(
     return { projectId: null, path: "" };
   }
   try {
-    const { project, revived } = deps.projects.upsertOnRequest(rawPath);
-    if (revived) log.debug({ projectId: project.id, path: project.path }, "已删除项目被再次请求，级联恢复");
+    const { project } = deps.projects.upsertOnRequest(rawPath);
     return { projectId: project.id, path: project.path };
   } catch (err) {
     log.warn({ err: String(err), rawPath }, "项目登记失败：降级透传");
@@ -217,8 +219,6 @@ function resolveSnapshot(
   }
 
   const snap = deps.snapshot.build({ projectId, projectPath, memoryProfile: projectId ? deps.l2.read(projectId) : "" });
-  // 新会话（或过期重建）：记录项目路径与注入内容全文，便于回放模型所见。
-  log.info({ projectId, path: projectPath, sessionKey, snapshot: snap }, "新会话开启：注入快照");
   if (existing) {
     deps.sessions.setSnapshot(sessionKey, snap);
     deps.sessions.touch(sessionKey, now);

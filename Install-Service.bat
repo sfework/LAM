@@ -13,7 +13,8 @@ REM   - Re-launches itself elevated (UAC prompt) if not admin
 REM   - Downloads NSSM v2.24 from nssm.cc into tools\ if missing
 REM   - Service command: node.exe --import tsx --liftoff-only src/server.ts
 REM     (--liftoff-only kept for tsx stability; former CodeGraph requirement, DESIGN 67, is gone)
-REM   - AppDirectory = repo root (so Logs\ and data\ land here)
+REM   - AppDirectory = repo root (so data\ and frontend\dist land here)
+REM   - Process stdout/stderr go to data\Logs\service\ (same log root as the app logs)
 REM   - Idempotent: existing service is removed and re-created
 REM =====================================================================
 setlocal EnableDelayedExpansion
@@ -89,7 +90,7 @@ if errorlevel 1 (
   pause & exit /b 1
 )
 
-if not exist "%ROOT%\Logs\service" mkdir "%ROOT%\Logs\service"
+if not exist "%ROOT%\data\Logs\service" mkdir "%ROOT%\data\Logs\service"
 
 "%NSSM%" set %SERVICE_NAME% AppDirectory "%ROOT%"
 "%NSSM%" set %SERVICE_NAME% DisplayName "Local Agent Memory Gateway"
@@ -98,9 +99,9 @@ if not exist "%ROOT%\Logs\service" mkdir "%ROOT%\Logs\service"
 REM restart 5s after unexpected exit
 "%NSSM%" set %SERVICE_NAME% AppExit Default Restart
 "%NSSM%" set %SERVICE_NAME% AppRestartDelay 5000
-REM redirect stdout/stderr into Logs\service\, rotate at 10MB
-"%NSSM%" set %SERVICE_NAME% AppStdout "%ROOT%\Logs\service\stdout.log"
-"%NSSM%" set %SERVICE_NAME% AppStderr "%ROOT%\Logs\service\stderr.log"
+REM redirect stdout/stderr into data\Logs\service\, rotate at 10MB
+"%NSSM%" set %SERVICE_NAME% AppStdout "%ROOT%\data\Logs\service\stdout.log"
+"%NSSM%" set %SERVICE_NAME% AppStderr "%ROOT%\data\Logs\service\stderr.log"
 "%NSSM%" set %SERVICE_NAME% AppStdoutCreationDisposition 4
 "%NSSM%" set %SERVICE_NAME% AppStderrCreationDisposition 4
 "%NSSM%" set %SERVICE_NAME% AppRotateFiles 1
@@ -111,7 +112,7 @@ REM "%NSSM%" set %SERVICE_NAME% AppEnvironmentExtra PORT=8790 DATA_DIR=E:\Code\L
 echo [INFO] Starting service...
 "%NSSM%" start %SERVICE_NAME%
 if errorlevel 1 (
-  echo [WARN] Service registered but failed to start. Check: sc query %SERVICE_NAME%, Logs\service\stderr.log
+  echo [WARN] Service registered but failed to start. Check: sc query %SERVICE_NAME%, data\Logs\service\stderr.log
 ) else (
   echo [OK] Service started: http://localhost:8790
 )

@@ -1,7 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { Hono, type Context } from "hono";
-import { createLogger } from "../infra/logger.js";
 import { frontendDistDir } from "../infra/paths.js";
 
 /**
@@ -18,8 +17,6 @@ import { frontendDistDir } from "../infra/paths.js";
  * 不用 @hono/node-server 的 serveStatic：其 root 只接受相对 cwd 的路径，
  * 而这里需要一个与启动目录无关的绝对路径（frontend/dist）。
  */
-
-const log = createLogger("web:spa");
 
 /** 后端保留前缀：这些路径永远不走 SPA 回退。 */
 const RESERVED_PREFIXES = ["/api", "/internal", "/mcp", "/v1", "/health"];
@@ -75,7 +72,6 @@ export function createSpaRouter(distDir: string = frontendDistDir()): Hono {
   const enabled = existsSync(indexFile);
 
   if (!enabled) {
-    log.debug({ distDir }, "未找到前端构建产物，跳过 SPA 托管（纯后端模式）");
     // 仅根路径给一句提示，其余一律 next()，让上层 404 逻辑保持原样。
     spa.get("/", (c) =>
       c.text(
@@ -90,8 +86,6 @@ export function createSpaRouter(distDir: string = frontendDistDir()): Hono {
     );
     return spa;
   }
-
-  log.debug({ distDir }, "已启用前端 SPA 托管");
 
   const handler = (c: Context) => {
     const urlPath = safeDecode(new URL(c.req.url).pathname);

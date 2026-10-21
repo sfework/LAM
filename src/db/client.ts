@@ -39,7 +39,6 @@ function tryLoadVec(raw: DatabaseSync): boolean {
       return false;
     }
     raw.loadExtension(loadablePath);
-    log.debug({ loadablePath }, "sqlite-vec 已加载");
     return true;
   } catch (err) {
     log.warn({ err: String(err) }, "sqlite-vec 加载失败，向量能力关闭（降级 FTS/BM25）");
@@ -64,7 +63,6 @@ export function openDb(): DbHandle {
   if (fts5Available) ensureFtsTables(raw);
   if (vecAvailable) ensureVecTable(raw);
 
-  log.debug({ file, fts5Available, vecAvailable }, "数据库已连接");
   return {
     raw,
     fts5Available,

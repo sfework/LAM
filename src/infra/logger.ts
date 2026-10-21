@@ -1,25 +1,19 @@
 import { Writable } from "node:stream";
-import path from "node:path";
 import pino, { type Logger } from "pino";
 import { HourlyRotatingWriter } from "./hourly-rotating.js";
 import { localLogStamp } from "./localtime.js";
+import { logsDir } from "./paths.js";
 
 /**
  * 日志工厂（DESIGN.md §5 日志方案）。
  *
  * - pino 结构化日志，级别默认 info（LOG_LEVEL 可临时调 debug）。
- * - 落盘：{dataRoot}/Logs/{yyyy}/{MM}/{dd}/{HH}.txt，每小时一个文件。
+ * - 落盘：{DATA_DIR}/Logs/{yyyy}/{MM}/{dd}/{HH}.txt，每小时一个文件（全项目唯一日志出口）。
  * - 行格式：`时间戳 [LEVEL] [模块] 消息 {结构化字段}`。
  *
- * 说明：主服务与 MCP 薄壳各自调用 createLogger，写入同一 Logs 目录下的
- * 小时文件（追加模式，无冲突）。
+ * 日志面规范：常规信息只保留三类（L1 提取 L0→L1、L2 凝练 L1→L2、L1 召回注入），
+ * 其余仅落异常与降级告警；常规操作类日志不写文件。
  */
-
-/** 允许被日志记录的环境变量仅这两个（其余配置全 DB）。 */
-function resolveLogRoot(): string {
-  const dataDir = process.env.DATA_DIR || path.resolve(process.cwd(), "data");
-  return path.join(dataDir, "Logs");
-}
 
 const LEVEL = process.env.LOG_LEVEL || "info";
 
@@ -36,7 +30,7 @@ function buildSinkStream(root: string): Writable {
 
 let sharedRoot: string | null = null;
 function logRoot(): string {
-  if (!sharedRoot) sharedRoot = resolveLogRoot();
+  if (!sharedRoot) sharedRoot = logsDir();
   return sharedRoot;
 }
 
