@@ -9,21 +9,19 @@ import { TOOL_DEFS, SEARCH_FAMILY_LIMIT } from "./tools.js";
 const log = createLogger("mcp");
 
 /**
- * MCP Server（Streamable HTTP，DESIGN §3、决策 44）。
+ * MCP Server（Streamable HTTP）。
  *
  * 挂在主服务 /mcp 路径上，与网关（/v1/*）、管理 API（/api/*）共用同一端口。
  * 无状态模式：每个 HTTP 请求新建一对 Server + Transport 处理完即弃
  * （SDK 要求 stateless transport 不可复用；本地单用户无需跨请求会话）。
  * enableJsonResponse=true：以普通 JSON 回应，不维持 SSE 长连接。
  *
- * 工具处理不直连 SQLite：通过 InternalCaller 调 /internal/* 只读端点。
+ * 工具处理不直连 SQLite：通过 InternalCaller 调 /internal/* 端点。
  * 主服务挂载时注入进程内 app.fetch（免回环 HTTP）；也可注入自定义实现（测试用）。
  */
 
-const WINDOW_MS = Number(process.env.MCP_SEARCH_WINDOW_MS || 30_000);
-
 /** 滚动窗口限流：key → 最近调用时间戳数组。 */
-class RollingLimiter {
+export class RollingLimiter {
   private hits = new Map<string, number[]>();
   private readonly limit: number;
   private readonly windowMs: number;
@@ -42,9 +40,6 @@ class RollingLimiter {
   }
 }
 
-/** 整个 MCP 面共用一个限流器（跨请求生效，防检索死循环的本意不变）。 */
-const limiter = new RollingLimiter(SEARCH_FAMILY_LIMIT, WINDOW_MS);
-
 export interface InternalResp {
   ok: boolean;
   data?: unknown;
@@ -58,10 +53,10 @@ function textContent(text: string) {
   return { content: [{ type: "text" as const, text }] };
 }
 
-/** 构建一个 MCP Server 实例（无状态：每请求一个）。 */
-export function buildMcpServer(call: InternalCaller): Server {
+/** 构建一个 MCP Server 实例（无状态：每请求一个）。限流器由装配方注入（依赖注入，可测）。 */
+export function buildMcpServer(call: InternalCaller, limiter: RollingLimiter): Server {
   const server = new Server(
-    { name: "local-agent-memory-gateway", version: "0.1.0" },
+    { name: "nlam", version: "2.0.0" },
     { capabilities: { tools: {} } },
   );
 
@@ -74,7 +69,7 @@ export function buildMcpServer(call: InternalCaller): Server {
     const args = (req.params.arguments ?? {}) as Record<string, unknown>;
     const start = Date.now();
     // 日志规范：常规工具调用不再落盘（调用本身在 /internal 与记忆链路日志里可回溯），
-    // 仅异常记 error。原样带上入参便于定位（含 SQL 连接串，日志文件仅本地使用）。
+    // 仅异常记 error。原样带上入参便于定位（日志文件仅本地使用）。
     const fail = (msg: string, extra?: Record<string, unknown>) =>
       log.error({ tool: name, projectPath: args.project_path ?? null, args, ms: Date.now() - start, ...extra }, msg);
 
@@ -122,12 +117,15 @@ function formatData(data: unknown): string {
 /**
  * 创建 /mcp 路由（Streamable HTTP，无状态）。
  * @param caller 内部端点调用器（主服务传进程内 fetch 适配器）
+ * @param windowMs 检索限流滚动窗口（默认 30s，环境变量 MCP_SEARCH_WINDOW_MS 覆盖）
  */
-export function createMcpRouter(caller: InternalCaller): Hono {
+export function createMcpRouter(caller: InternalCaller, windowMs?: number): Hono {
   const mcp = new Hono();
+  // 整个 MCP 面共用一个限流器（跨请求生效，防检索死循环）；装配点注入，非模块级单例。
+  const limiter = new RollingLimiter(SEARCH_FAMILY_LIMIT, windowMs ?? Number(process.env.MCP_SEARCH_WINDOW_MS || 30_000));
 
   const handle = async (c: Context): Promise<Response> => {
-    const server = buildMcpServer(caller);
+    const server = buildMcpServer(caller, limiter);
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // 无状态
       enableJsonResponse: true, // 纯 JSON 应答，不起 SSE 流

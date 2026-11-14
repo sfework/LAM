@@ -5,22 +5,22 @@ import { TablePage, SearchBox, DataTable, UIFormModal, UIModal, ToastUI, DeleteC
 import Net from '../Common/Net';
 
 /**
- * 记忆库页（/api/memories，DESIGN §2.7、决策 55）：
- * 筛选区 = 项目下拉（默认最后活跃的项目）；下方 3 页签：对话-L0 / 记忆-L1 / 画像-L2。
+ * 记忆库页（/api/memories）：
+ * 筛选区 = 项目下拉（默认最后活跃的项目）；下方 3 页签：对话 / 记忆 / 画像。
  * 页签内容按当前 tabKey 条件渲染：切到哪个页签才挂载哪个，离开即卸载 → 每次切换都重新加载该页签数据。
  * 切换项目 → 回到第一个页签并加载其内容。
- *  - L0：分页列表，内容/角色检索，时间倒序，查看（只读弹窗：角色/时间/全文）+ 删除（物理删 + 移出 FTS）。
- *  - L1：分页列表，内容检索，生成时间倒序，可编辑（正文，sha256 比对：变了才重写 FTS/失效向量待补嵌入）、可删除。
- *  - L2：textarea 画像全文，保存按钮（sha256 比对：变了才写库 version 自增；L2 不参与检索故不向量化）。
- * 内容列直接输出文本 + ellipsis（不再用 Tooltip 悬浮全文），完整内容经「查看」弹窗阅读。
+ *  - 对话：分页列表，内容/角色检索，时间倒序，查看（只读弹窗：角色/时间/全文）+ 删除（物理删）。
+ *  - 记忆：分页列表，内容检索，生成时间倒序，可编辑（正文，sha256 比对：变了才重写 FTS/失效向量待补嵌入）、可删除。
+ *  - 画像：textarea 画像全文，保存按钮（sha256 比对：变了才写库 version 自增；画像不参与检索故不向量化）。
+ * 内容列直接输出文本 + ellipsis，完整内容经「查看」弹窗阅读。
  */
 /** 毫秒时间戳 → 本地时间串（固定本地时区，与日志页一致）。 */
 function formatTime(ms) {
     return ms ? new Date(ms).toLocaleString() : '-';
 }
 
-/** L1 条目类型（kind，后端英文枚举）→ 中文名。未知值原样显示。 */
-const L1_KIND_LABELS = {
+/** 记忆条目类型（kind，后端英文枚举）→ 中文名。未知值原样显示。 */
+const KIND_LABELS = {
     persona: '偏好画像',
     episodic: '事件记录',
     instruction: '行为指令',
@@ -29,13 +29,13 @@ const L1_KIND_LABELS = {
     artifact: '资产链接',
 };
 function kindLabel(kind) {
-    return L1_KIND_LABELS[kind] || kind || '-';
+    return KIND_LABELS[kind] || kind || '-';
 }
 
 class Memories extends React.Component {
     constructor(props) {
         super(props);
-        this.state = { projects: [], projectId: null, tabKey: 'l0' };
+        this.state = { projects: [], projectId: null, tabKey: 'conv' };
     }
     componentDidMount() {
         Net.api.projects.list({ page: 1, pageSize: 1000 }).then(result => {
@@ -47,7 +47,7 @@ class Memories extends React.Component {
     }
     onProjectChange = (v) => {
         // 切换项目：回到第一个页签，页签子组件按 projectId 重新挂载并加载。
-        this.setState({ projectId: v, tabKey: 'l0' });
+        this.setState({ projectId: v, tabKey: 'conv' });
     };
     onTabChange = (k) => this.setState({ tabKey: k });
     render() {
@@ -55,9 +55,9 @@ class Memories extends React.Component {
         const none = <Typography.Text type='tertiary'>暂无项目，先在网关发起一次请求登记项目</Typography.Text>;
         // 只渲染当前激活页签的内容：切换即卸载旧页签、重新挂载新页签，其 componentDidMount 会重新拉数据。
         const pane = !projectId ? none
-            : tabKey === 'l0' ? <L0Tab key={`l0-${projectId}`} projectId={projectId} />
-            : tabKey === 'l1' ? <L1Tab key={`l1-${projectId}`} projectId={projectId} />
-            : <L2Tab key={`l2-${projectId}`} projectId={projectId} />;
+            : tabKey === 'conv' ? <ConversationTab key={`conv-${projectId}`} projectId={projectId} />
+            : tabKey === 'mem' ? <MemoryTab key={`mem-${projectId}`} projectId={projectId} />
+            : <ProfileTab key={`prof-${projectId}`} projectId={projectId} />;
         return <div className='memPage'>
             {/* TabPane 的键属性是 itemKey（非 tabKey）；内容按 tabKey 条件渲染（切页签即重载），切换项目以 key 强制重挂载并回到第一个页签。
                 项目选择放在 Tabs 的 tabBarExtraContent（页签栏右侧）。 */}
@@ -69,16 +69,16 @@ class Memories extends React.Component {
                             value={projectId ?? undefined} onChange={this.onProjectChange} placeholder='选择项目' />
                     </div>
                 }>
-                <TabPane itemKey='l0' tab='对话-L0'>{tabKey === 'l0' ? pane : null}</TabPane>
-                <TabPane itemKey='l1' tab='记忆-L1'>{tabKey === 'l1' ? pane : null}</TabPane>
-                <TabPane itemKey='l2' tab='画像-L2'>{tabKey === 'l2' ? pane : null}</TabPane>
+                <TabPane itemKey='conv' tab='对话'>{tabKey === 'conv' ? pane : null}</TabPane>
+                <TabPane itemKey='mem' tab='记忆'>{tabKey === 'mem' ? pane : null}</TabPane>
+                <TabPane itemKey='prof' tab='画像'>{tabKey === 'prof' ? pane : null}</TabPane>
             </Tabs>
         </div>;
     }
 }
 
-/** 对话-L0：内容/角色检索，时间倒序，查看（只读弹窗）/删除。 */
-class L0Tab extends React.Component {
+/** 对话页签：内容/角色检索，时间倒序，查看（只读弹窗）/删除。 */
+class ConversationTab extends React.Component {
     constructor(props) {
         super(props);
         this.state = { loading: false, data: Net.GetPaginationModel(), search: Net.GetPaginationRequest(30), viewTitle: '对话内容' };
@@ -87,7 +87,7 @@ class L0Tab extends React.Component {
     componentDidMount() { this.onLoad(); }
     onLoad = () => {
         this.setState({ loading: true });
-        Net.api.memories['l0-list']({ ...this.state.search, project_id: this.props.projectId }).then(result => {
+        Net.api.memories['conversation-list']({ ...this.state.search, project_id: this.props.projectId }).then(result => {
             if (result.success) this.setState({ data: result.data, loading: false });
             else this.setState({ loading: false });
         });
@@ -99,7 +99,7 @@ class L0Tab extends React.Component {
             () => this.viewRef.current.set(item).show());
     };
     delete = (id) => {
-        Net.api.memories['l0-delete']({ id }).then(result => {
+        Net.api.memories['conversation-delete']({ id }).then(result => {
             if (result.success) { ToastUI.success('删除成功'); this.onLoad(); }
         });
     };
@@ -129,13 +129,13 @@ class L0Tab extends React.Component {
                 <SearchBox.Submit />
             </SearchBox>
             <DataTable onPagination={this.onSearch} loading={this.state.loading} columns={this.columns()} dataSource={this.state.data} />
-            <L0ViewModal ref={this.viewRef} width={680} height={460} footer='hideOk' title={this.state.viewTitle} />
+            <ConversationViewModal ref={this.viewRef} width={680} height={460} footer='hideOk' title={this.state.viewTitle} />
         </TablePage>;
     }
 }
 
-/** L0 查看弹窗：只读展示消息全文（含角色/时间），不可编辑，仅「关闭」。 */
-class L0ViewModal extends UIModal {
+/** 对话查看弹窗：只读展示消息全文（含角色/时间），不可编辑，仅「关闭」。 */
+class ConversationViewModal extends UIModal {
     constructor(props) {
         super(props);
         this.data = {};
@@ -160,8 +160,8 @@ class L0ViewModal extends UIModal {
     }
 }
 
-/** 记忆-L1：内容检索，时间倒序，编辑（sha 比对）/删除。 */
-class L1Tab extends React.Component {
+/** 记忆页签：内容检索，时间倒序，编辑（sha 比对）/删除。 */
+class MemoryTab extends React.Component {
     constructor(props) {
         super(props);
         this.state = { loading: false, data: Net.GetPaginationModel(), search: Net.GetPaginationRequest(30) };
@@ -204,13 +204,13 @@ class L1Tab extends React.Component {
                 <SearchBox.Submit />
             </SearchBox>
             <DataTable onPagination={this.onSearch} loading={this.state.loading} columns={this.columns()} dataSource={this.state.data} />
-            <L1EditModal ref={this.editRef} width={620} />
+            <MemoryEditModal ref={this.editRef} width={620} />
         </TablePage>;
     }
 }
 
-/** L1 编辑弹窗：仅正文；带 sha256 做乐观并发 + 变更判定。 */
-class L1EditModal extends UIFormModal {
+/** 记忆编辑弹窗：仅正文；带 sha256 做乐观并发 + 变更判定。 */
+class MemoryEditModal extends UIFormModal {
     set = (data, callback) => { this.data = { ...data }; this.callback = callback; return this; };
     onSubmit = async (values) => {
         const result = await Net.api.memories.update({ id: this.data.id, content: values.content, sha256: this.data.sha256 });
@@ -232,8 +232,8 @@ class L1EditModal extends UIFormModal {
     }
 }
 
-/** 画像-L2：textarea + 保存（sha 比对）。 */
-class L2Tab extends React.Component {
+/** 画像页签：textarea + 保存（sha 比对）。 */
+class ProfileTab extends React.Component {
     constructor(props) {
         super(props);
         this.state = { loading: false, saving: false, content: '', sha256: '', version: 0 };
@@ -257,12 +257,12 @@ class L2Tab extends React.Component {
         });
     };
     render() {
-        const { content, loading, saving, version } = this.state;
-        return <div className='memL2'>
+        const { content, loading, saving } = this.state;
+        return <div className='memProfile'>
             <Button theme='solid' type='primary' loading={saving} disabled={loading} onClick={this.save}>保存</Button>
             <TextArea value={content} onChange={v => this.setState({ content: v })}
-                disabled={loading} placeholder='（暂无画像，可点击「设置」页或本按钮保存以创建，或用 /rebuild-profile 由记忆凝练生成）'
-                autosize={{ minRows: 18, maxRows: 40 }} style={{height: '100%', width: '100%', fontFamily: 'var(--semi-font-family-code, Consolas, monospace)', fontSize: 13 }} />
+                disabled={loading} placeholder='（暂无画像，可点击「保存」创建，或等待记忆管线自动凝练生成）'
+                autosize={{ minRows: 18, maxRows: 40 }} style={{ height: '100%', width: '100%', fontFamily: 'var(--semi-font-family-code, Consolas, monospace)', fontSize: 13 }} />
         </div>;
     }
 }

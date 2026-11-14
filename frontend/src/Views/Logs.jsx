@@ -6,7 +6,7 @@ import { TablePage, SearchBox, UIModal, ToastUI, DeleteConfirm, ContentPage } fr
 import Net from '../Common/Net';
 
 /**
- * 日志页（/api/logs，DESIGN §5 日志方案、决策 53）：
+ * 日志页（/api/logs）：
  * 日志按 {DATA_DIR}/Logs/{yyyy}/{MM}/{dd}/{HH}.txt 每小时一个文件。
  * 筛选区 = 日期选择（默认当天）；下方仿 Windows 资源管理器（中等图标）的平铺网格：
  * 图标 + 文件名，浅背景、悬停加重，点击弹窗只读查看内容，悬停右上角出现删除按钮（IO 删文件）。

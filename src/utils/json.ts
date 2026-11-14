@@ -1,5 +1,5 @@
 /**
- * LLM JSON 输出容错解析（参考 sanitizeJsonForParse）。
+ * LLM JSON 输出容错解析。
  * 处理：```json 代码块包裹、前后解释文本、尾逗号等常见格式瑕疵。
  */
 

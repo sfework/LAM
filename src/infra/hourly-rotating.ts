@@ -4,7 +4,7 @@ import path from "node:path";
 /**
  * 小时滚动日志写入器。
  *
- * 路径规则（DESIGN.md §5 日志方案）：{root}/{yyyy}/{MM}/{dd}/{HH}.txt
+ * 路径规则：{root}/{yyyy}/{MM}/{dd}/{HH}.txt
  * 每小时自动切换到新文件；跨小时边界由写入侧惰性判断。
  */
 
@@ -17,7 +17,7 @@ export function hourlyFilePath(root: string, d: Date): string {
   return path.join(root, yyyy, MM, dd, `${HH}.txt`);
 }
 
-/** 小时粒度 key，如 "2026-09-17T14"。 */
+/** 小时粒度 key，如 "2026-11-07T14"。 */
 function hourKey(d: Date): string {
   const yyyy = d.getFullYear();
   const MM = String(d.getMonth() + 1).padStart(2, "0");

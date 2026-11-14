@@ -5,7 +5,7 @@ import { TablePage, SearchBox, DataTable } from '../Common/Component';
 import Net from '../Common/Net';
 
 /**
- * 工具库页（/api/tools，移植自参考实现前端的工具库页）：
+ * 工具库页（/api/tools）：
  * 展示本服务 MCP 端点实际开放的只读工具清单（数据源 = src/mcp/tools.ts 的 TOOL_DEFS）。
  * 列 = 分组 + 名称 + 描述；搜索 = 关键字（名称/描述模糊）。工具集固定，无增删改。
  */

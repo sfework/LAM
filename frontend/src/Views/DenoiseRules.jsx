@@ -5,10 +5,10 @@ import { TablePage, SearchBox, DataTable, UIFormModal, ToastUI, DeleteConfirm } 
 import Net from '../Common/Net';
 
 /**
- * 除噪规则页（/api/denoise-rules，DESIGN §2.3）：
+ * 除噪规则页（/api/denoise-rules）：
  * 规则 = 删除「开始文本」到「结束文本」之间的内容（含两端）；提取模式则保留中间内容只剥两端标记；
  * 多条按创建顺序叠加；双通道（转发/记忆）各自独立生效。列表按添加时间倒序（新增靠前）展示。
- * 操作列：启用开关（/toggle，行内直接切换）、编辑、删除；搜索支持关键字（开始/结束文本模糊）。
+ * 操作列：启用开关（/update 部分字段合并，行内直接切换）、编辑、删除；搜索支持关键字（开始/结束文本模糊）。
  * 启用仅在列表操作，编辑弹窗不重复提供。
  */
 function getTableColumns(view) {
@@ -70,7 +70,7 @@ class DenoiseRules extends React.Component {
     create = () => this.editRef.current.set({}, this.onLoad).show();
     edit = (item) => () => this.editRef.current.set(item, this.onLoad).show();
     toggle = (item) => {
-        Net.api['denoise-rules'].toggle({ id: item.id }).then(result => {
+        Net.api['denoise-rules'].update({ id: item.id, enabled: !item.enabled }).then(result => {
             if (result.success) { ToastUI.success(result.data.enabled ? '已启用' : '已停用'); this.onLoad(); }
         });
     };

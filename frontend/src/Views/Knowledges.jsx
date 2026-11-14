@@ -9,7 +9,7 @@ const scopeOptions = [
 ];
 
 /**
- * 知识库页（/api/knowledge，DESIGN §2.5）：title/description/body/scope/projectId/enabled/sortOrder。
+ * 知识库页（/api/knowledge）：title/description/body/scope/projectId/enabled/sortOrder。
  * 列表显示描述（不显示正文），额外列展示范围（全局/项目名）；启用仅列表切换，按 sortOrder 升序。
  * scope=project 时须绑定项目（projectId 从项目列表下拉选择）。
  */

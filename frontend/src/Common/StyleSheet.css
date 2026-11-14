@@ -264,7 +264,7 @@ html,
     width: 100%;
 }
 
-/* 记忆库页：项目栏 + 三页签（L0/L1/L2），页签面板撑满、内部 flex 列布局 */
+/* 记忆库页：项目栏 + 三页签（对话/记忆/画像），页签面板撑满、内部 flex 列布局 */
 .memPage {
     display: flex;
     flex-direction: column;
@@ -305,17 +305,17 @@ html,
 height: 100%;
 }
 
-.memL2 {
+.memProfile {
     height: 100%;
     min-height: 0;
     display: flex;
     flex-direction: column;
     position: relative;
 }
-.memL2>button{
+.memProfile>button{
     position: absolute;
-    top: 10;
-    right: 10;
+    top: 10px;
+    right: 10px;
     z-index: 1;
 }
 

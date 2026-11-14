@@ -3,7 +3,7 @@ import { Form } from '@douyinfe/semi-ui';
 import { AssetPage } from '../Common/AssetPage';
 
 /**
- * Agents 页（/api/agents，DESIGN §2.5）：name/description/body/enabled/sortOrder。
+ * Agents 页（/api/agents）：name/description/body/enabled/sortOrder。
  * 与知识库同构：列表显示描述（不显示正文），启用仅列表切换，按 sortOrder 升序。描述、正文必填。
  */
 export default function Agents() {

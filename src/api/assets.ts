@@ -2,9 +2,8 @@ import type { AssetsRepo } from "../assets/repo.js";
 import { postRoutes, requireStr, optStr, optBool, optNum, badRequest, notFound, listRoute } from "./rest.js";
 
 /**
- * 资产 CRUD 路由（prompts / agents / knowledge，DESIGN §2.4 / §2.5、决策 45 + 47）。
+ * 资产 CRUD 路由（prompts / agents / knowledges）。
  * 一律 POST + JSON body：/list（分页）/get /create /update /delete（+ prompts /active）。
- * （技能 skills 路由已随功能整体移除。）
  */
 export function createAssetsRouters(repo: AssetsRepo) {
   // ── prompts（生效互斥；列表按名称正序）──
@@ -44,15 +43,19 @@ export function createAssetsRouters(repo: AssetsRepo) {
     "/list": listRoute((b) => filterRows(repo.listAgents(), b, ["name", "description"])),
     "/get": (b) => repo.getAgent(requireStr(b, "id")) ?? notFound("Agent 不存在"),
     "/create": (b) =>
-      repo.createAgent({ ...agentInput(b), name: requireStr(b, "name"), description: requireStr(b, "description"), body: requireStr(b, "body") }),
+      repo.createAgent({ ...agentInput(b), name: requireStr(b, "name"), body: requireStr(b, "body") }),
     "/update": (b) => repo.updateAgent(requireStr(b, "id"), agentInput(b)) ?? notFound("Agent 不存在"),
     "/delete": (b) => {
-      if (!repo.deleteAgent(requireStr(b, "id"))) notFound("Agent 不存在");
+      const id = requireStr(b, "id");
+      const existing = repo.getAgent(id);
+      if (!existing) notFound("Agent 不存在");
+      if (existing.system) badRequest(`系统级 Agent 不可删除：${existing.name}`);
+      if (!repo.deleteAgent(id)) notFound("Agent 不存在");
       return { deleted: true };
     },
   });
 
-  // ── knowledge ──
+  // ── knowledges ──
   const knowledge = postRoutes({
     "/list": listRoute((b) => filterRows(repo.listKnowledge(), b, ["title", "description"])),
     "/get": (b) => repo.getKnowledge(requireStr(b, "id")) ?? notFound("知识条目不存在"),
@@ -61,7 +64,6 @@ export function createAssetsRouters(repo: AssetsRepo) {
       return repo.createKnowledge({
         ...knowInput(b),
         title: requireStr(b, "title"),
-        description: requireStr(b, "description"),
         body: requireStr(b, "body"),
       });
     },

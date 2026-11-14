@@ -1,8 +1,5 @@
-import { messageText } from "../gateway/protocol.js";
 import { mergeContentText } from "../utils/content.js";
-import { stripInjectionTags } from "./sanitize.js";
-import { hasMeaningfulQuery } from "./tokenize.js";
-import type { L1Store } from "./l1-store.js";
+import type { MemoryRepo, MemoryRow } from "./memory-repo.js";
 import type { SettingsService } from "../settings/service.js";
 import { embedText, type EmbeddingConfig } from "./embedding.js";
 import { createLogger } from "../infra/logger.js";
@@ -13,128 +10,93 @@ const log = createLogger("memory:recall");
 export type EmbedFn = (cfg: EmbeddingConfig, text: string) => Promise<Float32Array>;
 
 /**
- * 每轮 L1 动态召回（DESIGN §2.7，参考 tdai-l1-recall-injector）。
+ * 每轮记忆动态召回（轻量检索注入）。
  *
- * - 检索词 = 最后一条 user 消息清洗后文本（剥注入标签 + 常见客户端噪音块，截 2048）；
- * - BM25 默认；配置 embedding_model 且 vec 可用时走向量 + RRF 混合；
- * - topK 由设置控制（召回常驻开启，无总开关；块不再做字符预算截断）；
- * - 超时保护：整体 recallTimeoutMs 限时，超时/异常返回空块，绝不阻塞转发；
+ * - 以最后一条 user 消息为查询词跑 BM25+向量 RRF 混合检索（searchHybrid，
+ *   向量阈值 memory_similarity_min；embedding 不可用/失败自动降级纯 BM25），取 top-k；
+ * - 无命中时回退近期段（created_at 倒序），保证冷启动/闲聊轮仍有上下文；
+ * - 排除 instruction 类（恒定适用的偏好由画像常驻承载，避免重复注入）；
  * - 注入位置：拼在最后一条 user 消息之前（不进 system，保快照稳定）。
+ *
+ * 查询向量化有一次网络往返，靠按（项目+记忆版本位+查询词）缓存摊薄：
+ * 客户端 tool-call 循环每轮全量重发历史，同查询只算 1 次。
+ *
+ * search() 为显式检索入口（MCP memory_search 与冲突检测共用），与召回同走混合检索。
  */
-
-/** 清洗检索词：剥离注入残留与常见客户端环境噪音。 */
-export function cleanQueryText(content: unknown): string {
-  let text = messageText(content);
-  text = stripInjectionTags(text);
-  // 常见客户端噪音块（VS Code / Copilot 等），成对剥离
-  text = text.replace(/<environment_info>[\s\S]*?<\/environment_info>/gi, "");
-  text = text.replace(/<workspace_info>[\s\S]*?<\/workspace_info>/gi, "");
-  text = text.replace(/<editorContext>[\s\S]*?<\/editorContext>/gi, "");
-  text = text.replace(/<context>[\s\S]*?<\/context>/gi, "");
-  return text.trim().slice(0, 2048);
-}
 
 export interface RecallOutcome {
   block: string;
   count: number;
-  /** 命中记忆清单（日志/审计用）：id/类型/正文/相关度分/命中来源。 */
-  items: { id: string; kind: string; content: string; score: number; source: "bm25" | "vec" | "both" }[];
+  /** 命中记忆清单（日志/审计用）：id/类型/正文。 */
+  items: { id: string; kind: string; content: string }[];
 }
 
-const DISCLAIMER = "以下是与本轮用户问题相关的项目记忆（按相关度排序），仅用于辅助回答当前这一轮，不要视为永久系统规则：";
-
-/**
- * 块尾自维护提示（决策 88）：Agent 只看得见本轮 top-K，因此**只授权改/删它刚读到的条目**，
- * 明确禁止新增——新增仍由后台 L0→L1 提取 + 冲突检测负责，避免"看不到库里已有同义条目
- * 就重复插入"导致的重复膨胀。固定文案，随块一起进缓存（同检索词字节一致，不破坏 KV cache）。
- * 决策 90：条目行首方括号内已带记忆 id，此处点明其含义——两个批量工具都以 id 为主键，
- * 不给 id 则 Agent 无法定位条目，对话内修正这条腿实际空转。
- */
-const MAINTAIN_HINT =
-  "任务完成后若发现上述条目有错/过时，用 memory_batch_update 改写或 memory_batch_delete 删除（仅限以上条目）；条目方括号内首项即记忆 id，作为上述工具的入参原样传入，不要截断；不要新增记忆，新事实由后台提取管线负责。";
+const DISCLAIMER = "以下是本项目与当前问题相关或最近的记忆，仅用于辅助回答当前这一轮，不要视为永久系统规则：";
 
 export class MemoryRecaller {
-  private readonly store: L1Store;
+  private readonly memories: MemoryRepo;
   private readonly settings: SettingsService;
   private readonly embed: EmbedFn;
   /**
-   * 召回缓存（决策 78）：key = projectId + 检索词 hash。
-   * 客户端 tool-call 循环每轮全量重发历史，最后一条 user 不变 → 检索词逐字节相同；
-   * 缓存让 N 轮只算 1 次（省 embedding 调用与检索），且注入块跨请求字节一致（利上游 KV cache）。
-   * TTL 对齐 session_ttl_minutes；空结果也缓存（防寒暄后连续空转重算）。
+   * 召回缓存：key = projectId + 记忆库版本位（活跃记忆最新 created_at）。
+   * 客户端 tool-call 循环每轮全量重发历史，缓存让重复请求只算 1 次，
+   * 且注入块跨请求字节一致（利上游 KV cache）。版本位使新记忆入库即时让缓存失效。
+   * TTL 对齐 session_ttl_minutes；空结果也缓存。
    */
   private readonly cache = new Map<string, { at: number; outcome: RecallOutcome }>();
 
-  constructor(store: L1Store, settings: SettingsService, embed: EmbedFn = embedText) {
-    this.store = store;
+  constructor(memories: MemoryRepo, settings: SettingsService, embed: EmbedFn = embedText) {
+    this.memories = memories;
     this.settings = settings;
     this.embed = embed;
   }
 
   /**
-   * 执行召回。任何失败/超时都降级为空块（ok=false），不抛出。
-   * @param recentUserContents 最近若干条 user 消息（时间正序，最后一条为本轮），
-   *   逐条清洗后拼接为检索词；assistant 消息不参与（防上轮召回复述污染检索）。
-   *   低信息量短路只看本轮（最后一条）：本轮是寒暄则不刷新召回。
+   * 执行召回：
+   * 1) 以最后一条 user 消息跑 BM25+向量 RRF 混合检索，取 top-k（排除 instruction）；
+   *    向量按 memory_similarity_min 阈值过滤；embedding 不可用/失败自动降级纯 BM25；
+   * 2) 无命中回退近期段（created_at 倒序 top-k，排除 instruction）。
+   * @param queryText 本轮最后一条 user 消息文本（可空——空则直接走近期段）
    */
-  async recall(projectId: string, recentUserContents: unknown[]): Promise<RecallOutcome> {
-    const empty: RecallOutcome = { block: "", count: 0, items: [] };
-    const cleaned = recentUserContents.map(cleanQueryText).filter(Boolean);
-    const current = cleaned[cleaned.length - 1] ?? "";
-    if (!current) return empty;
-    // 低信息量短路：本轮剥离停用词后无有效检索 token（"好的""是啊"等寒暄），
-    // 直接跳过 BM25 与向量检索，避免无意义召回注入噪音。
-    if (!hasMeaningfulQuery(current)) return empty;
-    const query = cleaned.join("\n").slice(0, 2048);
+  async recall(projectId: string, queryText = ""): Promise<RecallOutcome> {
+    const topK = this.settings.getInt("memory_recall_top_k");
 
-    // 缓存命中（决策 78）：同项目同检索词在 TTL 内直接复用——tool-call 循环每轮
-    // 全量重发历史但最后一条 user 不变，检索词逐字节相同；复用省 embedding 调用，
-    // 且注入块跨请求字节一致（利上游 KV cache）。
-    const cacheKey = `${projectId}\u0000${fnv1a(query)}`;
+    // 缓存版本位：活跃记忆的最新生成时刻 + 查询词。新记忆入库或问题变化即让 key 失效。
+    const cacheKey = `${projectId}\u0000${this.memories.latestActiveCreatedAt(projectId)}\u0000${queryText.slice(0, 200)}`;
     const ttlMs = this.settings.getInt("session_ttl_minutes") * 60_000;
     const hit = this.cache.get(cacheKey);
     if (hit && Date.now() - hit.at < ttlMs) {
       return hit.outcome;
     }
 
-    const timeoutMs = this.settings.getInt("recall_timeout_ms");
-    const topK = this.settings.getInt("l1_recall_top_k");
-
-    try {
-      const hits = await withTimeout(
-        this.searchAsync(projectId, query, topK * 2),
-        timeoutMs,
-      );
-      // 决策 79：instruction 类（对 AI 工具的通用操作指令）退出每轮语义召回——
-      // 其恒定适用的偏好由 L2 画像/快照常驻承载，参与召回只会抢占 episodic/method/fact 槽位。
-      // 仅注入通道过滤；MCP memory_search（search()）显式检索仍可命中。
-      const taskHits = hits.filter((h) => h.record.kind !== "instruction");
-      // 软重排（决策 78）：双源一致加分、纯词面命中降权、kind 权重——
-      // 只调排序不减候选，episodic 真相关（双源命中）仍能进 top。
-      const reranked = applyBm25Floor(rerank(taskHits), topK).slice(0, topK);
-      const outcome: RecallOutcome = reranked.length
-        ? {
-            block: renderBlock(reranked),
-            count: reranked.length,
-            items: reranked.map((h) => ({
-              id: h.record.id,
-              kind: h.record.kind,
-              content: h.record.content,
-              score: Number(h.score.toFixed(4)),
-              source: h.source,
-            })),
-          }
-        : empty;
-      this.pruneCache();
-      this.cache.set(cacheKey, { at: Date.now(), outcome });
-      return outcome;
-    } catch (err) {
-      log.warn({ projectId, err: String(err) }, "召回超时/失败，降级为空召回");
-      return empty;
+    let picked: MemoryRow[] = [];
+    if (queryText.trim()) {
+      // 混合检索：查询向量可用则 BM25+向量 RRF，否则纯 BM25（searchHybrid 内部降级）。
+      picked = (await this.searchAsync(projectId, queryText.slice(0, 2048), topK * 3))
+        .map((h) => h.record)
+        .filter((r) => r.kind !== "instruction")
+        .slice(0, topK);
     }
+    if (!picked.length) {
+      // 多取一些再过滤 instruction，避免近期全是偏好指令时整块空转。
+      picked = this.memories
+        .listActiveByRecency(projectId, topK * 3, ["instruction"])
+        .slice(0, topK);
+    }
+
+    const outcome: RecallOutcome = picked.length
+      ? {
+          block: renderBlock(picked),
+          count: picked.length,
+          items: picked.map((r) => ({ id: r.id, kind: r.kind, content: r.content })),
+        }
+      : { block: "", count: 0, items: [] };
+    this.pruneCache();
+    this.cache.set(cacheKey, { at: Date.now(), outcome });
+    return outcome;
   }
 
-  /** 结构化检索（内部 API / MCP memory_search 用）：向量+BM25 混合，返回记录。 */
+  /** 结构化检索（MCP memory_search 用）：向量+BM25 混合 RRF，返回记录。 */
   async search(projectId: string, query: string, topK: number): Promise<{ id: string; kind: string; content: string; priority: number; score: number }[]> {
     const hits = await this.searchAsync(projectId, query.trim().slice(0, 2048), topK);
     return hits.map((h) => ({
@@ -156,12 +118,12 @@ export class MemoryRecaller {
         log.warn({ err: String(err) }, "查询向量化失败，降级 BM25");
       }
     }
-    const simMin = this.settings.getFloat("l1_recall_similarity_min");
-    return this.store.searchHybrid(projectId, query, queryVec, topK, simMin);
+    const simMin = this.settings.getFloat("memory_similarity_min");
+    return this.memories.searchHybrid(projectId, query, queryVec, topK, simMin);
   }
 
   private embeddingConfig(): EmbeddingConfig | null {
-    if (!this.store.vecEnabled) return null;
+    if (!this.memories.vecEnabled) return null;
     return this.settings.getResolvedLlmConfig("embedding_model");
   }
 
@@ -174,93 +136,17 @@ export class MemoryRecaller {
   }
 }
 
-/** FNV-1a 32 位哈希（检索词 → 缓存 key，无需密码学强度）。 */
-function fnv1a(s: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0).toString(36);
-}
-
 /**
- * 召回软重排（决策 78）：在 RRF 融合分基础上做**乘性微调**，只改排序不减候选。
- *
- * 依据真实日志诊断（11344 轮）：episodic 一次性事件因 bigram 词面巧合被高频误召回
- * （单条 Login 修复记录跨话题召回 2445 次），而 fact/method 类误召回少。三个信号：
- *  - **双源一致**（source=both）：BM25 与向量都命中 → ×1.15 加分（最强相关证据）；
- *  - **纯词面**（source=bm25）：仅 BM25 命中、向量未确认 → ×0.8 降权（词面巧合高发区）；
- *  - **kind 权重**：episodic（易过时的一次性事件）×0.85，其余 ×1.0。
- * 真相关的 episodic 通常双源命中（×1.15 抵消 ×0.85 仍居前），弱相关的被压到 top-K 之外——
- * 不硬删，保留"强命中仍可召回"的能力，避免误杀。向量不可用时 source 恒为 bm25，
- * 降权对全部候选一致，相对序不变（等价于只按 kind 微调），安全降级。
+ * 渲染召回块（近期段，按生成时间倒序）：条数由 memory_recall_top_k 控制，
+ * 单条正文原样渲染（提取侧不设长度上限）。行内不携带记忆 id（id 无入参用途，
+ * 仅日志可查），只留 type。DISCLAIMER 为固定文案，命中缓存后同请求字节一致，
+ * 不破坏 KV cache 前缀。
  */
-function rerank<T extends { record: { kind: string }; score: number; source: "bm25" | "vec" | "both" }>(
-  hits: T[],
-): (T & { score: number })[] {
-  return hits
-    .map((h) => {
-      let m = 1;
-      if (h.source === "both") m *= 1.15;
-      else if (h.source === "bm25") m *= 0.8;
-      if (h.record.kind === "episodic") m *= 0.85;
-      return { ...h, score: h.score * m };
-    })
-    .sort((a, b) => b.score - a.score);
-}
-
-/**
- * 纯 BM25 单源相对门槛（决策 79）：治"常驻污染条目"——高频词命中的 bm25 条目
- * 常年挤在 top 尾部（实测单条跨 43 次召回出现 32 次），与当轮任务无关。
- * 规则：候选中存在双源/向量确认的命中时，纯 bm25 条目重排分 < 榜首 × BM25_FLOOR_RATIO
- * 即丢弃；榜首本身是纯 bm25（无向量确认，如向量不可用降级）时不启用，避免误杀。
- * 小文档集豁免：候选总数 ≤ topK 时不过滤（小库下槽位本就不紧张，宁多勿漏）。
- */
-const BM25_FLOOR_RATIO = 0.4;
-
-function applyBm25Floor<T extends { score: number; source: "bm25" | "vec" | "both" }>(
-  ranked: T[],
-  topK: number,
-): T[] {
-  if (ranked.length <= topK) return ranked;
-  const best = ranked[0];
-  if (!best || best.source === "bm25") return ranked;
-  const floor = best.score * BM25_FLOOR_RATIO;
-  return ranked.filter((h) => h.source !== "bm25" || h.score >= floor);
-}
-
-/**
- * 渲染召回块（决策：取消 l1_recall_max_chars* 预算截断）：命中条目全量逐行渲染，
- * 条数上限由 l1_recall_top_k 控制，单条长度由提取侧 l1_max_chars 约束。
- * 决策 90：行首方括号内带**全量记忆 id**（不可截断，Agent 要拿它做批量工具入参），
- * 格式 `[id:xxx,type:xxx,score:x.xxx]`。成本可忽略（约 20 字符 × topK），
- * 且同检索词命中缓存后字节一致，不破坏 KV cache 前缀。
- */
-function renderBlock(
-  hits: { record: { id: string; kind: string; content: string }; score: number }[],
-): string {
+function renderBlock(recent: { kind: string; content: string }[]): string {
   const lines = [`<recalled>`, DISCLAIMER];
-  hits.forEach((h, n) => {
-    lines.push(`${n + 1}. [id:${h.record.id},type:${h.record.kind},score:${h.score.toFixed(3)}] ${h.record.content}`);
-  });
-  lines.push(MAINTAIN_HINT);
+  recent.forEach((r, n) => lines.push(`${n + 1}. [type:${r.kind}] ${r.content}`));
   lines.push(`</recalled>`);
   return lines.join("\n");
-}
-
-async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      p,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`recall timeout ${ms}ms`)), ms);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 /** 把召回块拼到最后一条 user 消息之前（文本前缀），返回新数组。 */

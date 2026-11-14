@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { newId } from "../infra/id.js";
+import { colJson, colNum, colStr, getRow, getRows, type SqlRow } from "../db/rows.js";
 
 export type ModelCategory = "llm" | "embedding";
 /** 模型录入模式：auto=自动获取（清单为 /models 全量）；manual=手工输入（清单仅一个手输模型）。 */
@@ -14,7 +15,6 @@ export interface ModelRow {
   model: string;
   /** 提供商可用模型清单（models_json 解析；空数组=未配置）。 */
   models: string[];
-  /** 模型录入模式（决定弹窗页签与保存语义）。 */
   modelMode: ModelMode;
   createdAt: number;
   updatedAt: number;
@@ -27,20 +27,9 @@ export interface ModelInput {
   key?: string;
   /** 默认模型（清单首项）；留空表示提供商尚未配置模型。 */
   model?: string;
-  /** 提供商模型清单（/models 拉取结果或手输，不支持 /models 时通常只有手输的一个）。 */
+  /** 提供商模型清单（/models 拉取结果或手输）。 */
   models?: string[];
-  /** 录入模式（缺省 auto）。 */
   modelMode?: ModelMode;
-}
-
-/** models_json 解析（非法/旧行回退空数组）。 */
-function parseModelsJson(raw: unknown): string[] {
-  try {
-    const v = JSON.parse(String(raw ?? "[]")) as unknown;
-    return Array.isArray(v) ? v.map(String).filter(Boolean) : [];
-  } catch {
-    return [];
-  }
 }
 
 /** 清单归一：去空、trim、保序去重。 */
@@ -49,32 +38,38 @@ export function normalizeModels(v: unknown): string[] {
   return [...new Set(v.map((x) => String(x ?? "").trim()).filter(Boolean))];
 }
 
-function rowToModel(r: Record<string, unknown>): ModelRow {
+function mapModel(r: SqlRow): ModelRow {
   return {
-    id: r.id as string,
-    category: r.category as ModelCategory,
-    name: r.name as string,
-    url: r.url as string,
-    key: r.key as string,
-    model: r.model as string,
-    models: parseModelsJson(r.models_json),
-    modelMode: (r.model_mode === "manual" ? "manual" : "auto") as ModelMode,
-    createdAt: r.created_at as number,
-    updatedAt: r.updated_at as number,
+    id: colStr(r, "id"),
+    category: colStr(r, "category") as ModelCategory,
+    name: colStr(r, "name"),
+    url: colStr(r, "url"),
+    key: colStrOrNullStr(r, "key"),
+    model: colStrOrNullStr(r, "model"),
+    models: colJson<string[]>(r, "models_json", []).filter(Boolean),
+    modelMode: colStr(r, "model_mode") === "manual" ? "manual" : "auto",
+    createdAt: colNum(r, "created_at"),
+    updatedAt: colNum(r, "updated_at"),
   };
 }
 
-/** 模型库仓储（DESIGN §2.9）。 */
-export class ModelRepo {
-  private readonly raw: DatabaseSync;
+/** key/model 列允许 NULL，统一归一为空串。 */
+function colStrOrNullStr(r: SqlRow, col: string): string {
+  const v = r[col];
+  return v === null || v === undefined ? "" : String(v);
+}
 
-  constructor(raw: DatabaseSync) {
-    this.raw = raw;
+/** 模型库仓储：LLM / embedding 提供商条目。 */
+export class ModelRepo {
+  private readonly db: DatabaseSync;
+
+  constructor(db: DatabaseSync) {
+    this.db = db;
   }
 
   /**
    * 列表：可选分类过滤 + keyword（名称/模型名模糊，大小写不敏感）。
-   * 排序：LLM 靠前（category='llm' → 0，其余 → 1），同分类内按名称 ASC（不区分大小写）。
+   * 排序：LLM 靠前，同分类内按名称 ASC。
    */
   list(category?: ModelCategory, keyword?: string): ModelRow[] {
     const where: string[] = [];
@@ -90,21 +85,18 @@ export class ModelRepo {
     }
     const whereSql = where.length ? ` WHERE ${where.join(" AND ")}` : "";
     const orderSql = " ORDER BY CASE category WHEN 'llm' THEN 0 ELSE 1 END, name COLLATE NOCASE ASC";
-    const rows = this.raw.prepare(`SELECT * FROM models${whereSql}${orderSql}`).all(...args) as Record<string, unknown>[];
-    return rows.map(rowToModel);
+    return getRows(this.db, `SELECT * FROM models${whereSql}${orderSql}`, ...args).map(mapModel);
   }
 
   get(id: string): ModelRow | undefined {
-    const r = this.raw.prepare("SELECT * FROM models WHERE id = ?").get(id) as
-      | Record<string, unknown>
-      | undefined;
-    return r ? rowToModel(r) : undefined;
+    const r = getRow(this.db, "SELECT * FROM models WHERE id = ?", id);
+    return r ? mapModel(r) : undefined;
   }
 
   create(input: ModelInput): ModelRow {
     const now = Date.now();
     const id = newId("mdl");
-    this.raw
+    this.db
       .prepare(
         "INSERT INTO models (id, category, name, url, key, model, models_json, model_mode, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
       )
@@ -116,7 +108,7 @@ export class ModelRepo {
     const existing = this.get(id);
     if (!existing) return undefined;
     const merged = { ...existing, ...input };
-    this.raw
+    this.db
       .prepare(
         "UPDATE models SET category=?, name=?, url=?, key=?, model=?, models_json=?, model_mode=?, updated_at=? WHERE id=?",
       )
@@ -125,7 +117,6 @@ export class ModelRepo {
   }
 
   delete(id: string): boolean {
-    const res = this.raw.prepare("DELETE FROM models WHERE id = ?").run(id);
-    return Number(res.changes) > 0;
+    return this.db.prepare("DELETE FROM models WHERE id = ?").run(id).changes > 0;
   }
 }

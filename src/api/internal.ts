@@ -2,66 +2,73 @@ import { Hono, type Context } from "hono";
 import type { ProjectRepo } from "../projects/repo.js";
 import { normalizeProjectPath } from "../projects/normalize.js";
 import type { AssetsRepo } from "../assets/repo.js";
-import type { L1Store } from "../memory/l1-store.js";
-import type { L2Refiner } from "../memory/l2-refiner.js";
+import type { MemoryRepo, MemoryKind } from "../memory/memory-repo.js";
+import { isMemoryKind } from "../memory/memory-repo.js";
+import type { ProfileRefiner } from "../memory/profile-refiner.js";
 import type { MemoryRecaller } from "../memory/recall.js";
 import type { SettingsService } from "../settings/service.js";
-import { SqlError, type SqlService } from "../sql/service.js";
-import type { SqlDialect } from "../sql/drivers.js";
+import type { SqlService } from "../sqlquery/service.js";
 import { createLogger } from "../infra/logger.js";
 
 const log = createLogger("internal");
 
 /**
- * 内部只读 API（/internal/*）——供 MCP 薄壳经 HTTP 调用（DESIGN §3、决策：MCP 薄壳不直连 DB）。
- * 无鉴权（本地），只读，字段裁剪到工具所需。
- *
- * 工具类端点统一接收 project_path（规范化），内部解析为 projectId。
+ * 内部 API（/internal/*）——仅供 MCP 薄壳调用（MCP 不直连 DB）。
+ * 无鉴权（本地单用户），参数约定统一：全部 POST + JSON body（含 project_path），
+ * 不再有"query 传 project_path、复杂值 JSON 串进 query"的特殊分支。
+ * 只保留有 MCP 工具对应的端点，无工具的死端点不建。
  */
 export interface InternalDeps {
   projects: ProjectRepo;
   assets: AssetsRepo;
-  l1: L1Store;
-  l2: L2Refiner;
+  memories: MemoryRepo;
+  profiles: ProfileRefiner;
   recaller: MemoryRecaller;
   settings: SettingsService;
   sql: SqlService;
 }
 
+/** 请求体（全部端点统一从 JSON body 取参）。 */
+async function bodyOf(c: Context): Promise<Record<string, unknown>> {
+  return ((await c.req.json().catch(() => null)) as Record<string, unknown> | null) ?? {};
+}
+
+function str(b: Record<string, unknown>, key: string): string {
+  return typeof b[key] === "string" ? (b[key] as string).trim() : "";
+}
+
 export function createInternalRouter(deps: InternalDeps): Hono {
   const app = new Hono();
 
+  /** project_path（body）→ projectId（规范化后查库）。 */
+  const resolveProjectId = (b: Record<string, unknown>): string | null => {
+    const rawPath = str(b, "project_path");
+    if (!rawPath) return null;
+    const p = deps.projects.findByPath(normalizeProjectPath(rawPath));
+    return p ? p.id : null;
+  };
+
   // ── knowledge ──
-  app.get("/knowledge/list", (c) => {
-    const projectId = resolveProjectId(deps, c);
-    const rows = deps.assets
-      .listKnowledge()
-      .filter((k) => k.enabled && (k.scope === "global" || (projectId && k.projectId === projectId)));
-    return ok(c, rows.map((k) => ({ id: k.id, title: k.title, description: k.description, scope: k.scope })));
-  });
-  // 项目隔离（决策 82）：knowledge/agent/memory 全部工具端点强制校验 project_path；
-  // knowledge 的 project 级条目只能由归属项目读写，global 不限；agent 无项目归属，
-  // 仅要求 project_path 可解析（审计与口径统一）。
-  app.get("/knowledge/read", (c) => {
-    const projectId = resolveProjectId(deps, c);
+  // 项目隔离：project 级条目只能由归属项目读写，global 不限；
+  // agent/memory/sql 端点同样强制 project_path 可解析（审计与口径统一）。
+  app.post("/knowledge/read", async (c) => {
+    const b = await bodyOf(c);
+    const projectId = resolveProjectId(b);
     if (!projectId) return bad(c, "无法解析 project_path");
-    const id = c.req.query("id");
+    const id = str(b, "id");
     if (!id) return bad(c, "id 必填");
     const k = deps.assets.getKnowledge(id);
     if (!k) return notFound(c, "knowledge", id);
     if (k.scope === "project" && k.projectId !== projectId) return notFound(c, "knowledge", id);
     return ok(c, { id: k.id, title: k.title, description: k.description, body: k.body, scope: k.scope });
   });
-  /**
-   * 更新知识条目（MCP knowledge_update 用，决策 81）：只开放内容字段
-   * title/description/body（部分更新，至少一个非空）；enabled/sortOrder/scope 归管理台。
-   * 跨项目护栏：project scope 条目仅当 project_path 解析出的项目匹配才可改；global 不限。
-   */
+
+  /** 更新知识条目：只开放内容字段 title/description/body（部分更新，至少一个非空）；enabled/sortOrder/scope 归管理台。 */
   app.post("/knowledge/update", async (c) => {
-    const projectId = resolveProjectId(deps, c);
+    const b = await bodyOf(c);
+    const projectId = resolveProjectId(b);
     if (!projectId) return bad(c, "无法解析 project_path");
-    const b = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const id = typeof b?.id === "string" ? b.id : "";
+    const id = str(b, "id");
     if (!id) return bad(c, "id 必填");
     const existing = deps.assets.getKnowledge(id);
     if (!existing) return notFound(c, "knowledge", id);
@@ -70,7 +77,7 @@ export function createInternalRouter(deps: InternalDeps): Hono {
     }
     const input: Partial<{ title: string; description: string; body: string }> = {};
     for (const key of ["title", "description", "body"] as const) {
-      const v = typeof b?.[key] === "string" ? (b[key] as string).trim() : "";
+      const v = str(b, key);
       if (v) input[key] = v;
     }
     if (!Object.keys(input).length) return bad(c, "title/description/body 至少传一个非空值");
@@ -78,39 +85,31 @@ export function createInternalRouter(deps: InternalDeps): Hono {
     if (!updated) return notFound(c, "knowledge", id);
     return ok(c, { id: updated.id, title: updated.title, description: updated.description, scope: updated.scope });
   });
-  /**
-   * 创建知识条目（MCP knowledge_create 用，决策 83）：project_path 必填；
-   * scope 缺省 project（挂到解析出的项目），可显式 global（挂全局）；
-   * enabled 恒 true（生效开关归管理台），sortOrder 缺省 0。
-   */
+
+  /** 创建知识条目：scope 缺省 project（挂解析出的项目），可显式 global；enabled 恒 true（启停归管理台）。 */
   app.post("/knowledge/create", async (c) => {
-    const projectId = resolveProjectId(deps, c);
+    const b = await bodyOf(c);
+    const projectId = resolveProjectId(b);
     if (!projectId) return bad(c, "无法解析 project_path");
-    const b = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const title = typeof b?.title === "string" ? b.title.trim() : "";
-    const body = typeof b?.body === "string" ? b.body.trim() : "";
-    const description = typeof b?.description === "string" ? b.description.trim() : "";
+    const title = str(b, "title");
+    const body = str(b, "body");
+    const description = str(b, "description");
     if (!title || !body) return bad(c, "title 与 body 必填");
-    const scope = b?.scope === "global" ? "global" : "project";
+    const scope = str(b, "scope") === "global" ? "global" : "project";
     const k = deps.assets.createKnowledge({
-      title,
-      description,
-      body,
-      scope,
+      title, description, body, scope,
       projectId: scope === "project" ? projectId : null,
       enabled: true,
     });
     return ok(c, { id: k.id, title: k.title, description: k.description, scope: k.scope });
   });
-  /**
-   * 删除知识条目（MCP knowledge_delete 用，决策 83）：物理删除（与管理台决策 56 同语义）。
-   * 跨项目护栏：project 级条目仅归属项目可删；global 条目不限，但删除记 WARN 强化审计。
-   */
+
+  /** 删除知识条目：物理删除；project 级仅归属项目可删；global 不限但记 WARN 审计。 */
   app.post("/knowledge/delete", async (c) => {
-    const projectId = resolveProjectId(deps, c);
+    const b = await bodyOf(c);
+    const projectId = resolveProjectId(b);
     if (!projectId) return bad(c, "无法解析 project_path");
-    const b = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const id = typeof b?.id === "string" ? b.id : "";
+    const id = str(b, "id");
     if (!id) return bad(c, "id 必填");
     const existing = deps.assets.getKnowledge(id);
     if (!existing) return notFound(c, "knowledge", id);
@@ -125,30 +124,27 @@ export function createInternalRouter(deps: InternalDeps): Hono {
   });
 
   // ── agents ──
-  app.get("/agents/list", (c) => ok(c, deps.assets.listAgents().filter((a) => a.enabled).map((a) => ({ id: a.id, name: a.name, description: a.description }))));
-  app.get("/agents/read", (c) => {
-    if (!resolveProjectId(deps, c)) return bad(c, "无法解析 project_path");
-    const id = c.req.query("id");
+  app.post("/agents/read", async (c) => {
+    const b = await bodyOf(c);
+    if (!resolveProjectId(b)) return bad(c, "无法解析 project_path");
+    const id = str(b, "id");
     if (!id) return bad(c, "id 必填");
     const a = deps.assets.getAgent(id);
     if (!a) return notFound(c, "agent", id);
     return ok(c, { id: a.id, name: a.name, description: a.description, body: a.body });
   });
-  /**
-   * 更新 Agent 定义（MCP agent_update 用，决策 81）：只开放内容字段
-   * name/description/body（部分更新，至少一个非空）；enabled/sortOrder 归管理台。
-   * Agent 无项目归属概念，不需 project_path 护栏。
-   */
+
+  /** 更新 Agent：只开放 name/description/body（部分更新，至少一个非空）；enabled/sortOrder 归管理台。 */
   app.post("/agents/update", async (c) => {
-    if (!resolveProjectId(deps, c)) return bad(c, "无法解析 project_path");
-    const b = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const id = typeof b?.id === "string" ? b.id : "";
+    const b = await bodyOf(c);
+    if (!resolveProjectId(b)) return bad(c, "无法解析 project_path");
+    const id = str(b, "id");
     if (!id) return bad(c, "id 必填");
     const existing = deps.assets.getAgent(id);
     if (!existing) return notFound(c, "agent", id);
     const input: Partial<{ name: string; description: string; body: string }> = {};
     for (const key of ["name", "description", "body"] as const) {
-      const v = typeof b?.[key] === "string" ? (b[key] as string).trim() : "";
+      const v = str(b, key);
       if (v) input[key] = v;
     }
     if (!Object.keys(input).length) return bad(c, "name/description/body 至少传一个非空值");
@@ -156,230 +152,164 @@ export function createInternalRouter(deps: InternalDeps): Hono {
     if (!updated) return notFound(c, "agent", id);
     return ok(c, { id: updated.id, name: updated.name, description: updated.description });
   });
-  /**
-   * 创建 Agent 定义（MCP agent_create 用，决策 83）：project_path 必填（统一校验口径）；
-   * enabled 恒 true（生效开关归管理台），sortOrder 缺省 0；Agent 表无项目归属。
-   */
+
+  /** 创建 Agent：enabled 恒 true（启停归管理台）；Agent 表无项目归属。 */
   app.post("/agents/create", async (c) => {
-    if (!resolveProjectId(deps, c)) return bad(c, "无法解析 project_path");
-    const b = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const name = typeof b?.name === "string" ? b.name.trim() : "";
-    const body = typeof b?.body === "string" ? b.body.trim() : "";
-    const description = typeof b?.description === "string" ? b.description.trim() : "";
+    const b = await bodyOf(c);
+    if (!resolveProjectId(b)) return bad(c, "无法解析 project_path");
+    const name = str(b, "name");
+    const body = str(b, "body");
+    const description = str(b, "description");
     if (!name || !body) return bad(c, "name 与 body 必填");
     const a = deps.assets.createAgent({ name, description, body, enabled: true });
     return ok(c, { id: a.id, name: a.name, description: a.description });
   });
-  /** 删除 Agent 定义（MCP agent_delete 用，决策 83）：物理删除；Agent 为全局资产，删除记 WARN 强化审计。 */
+
+  /** 删除 Agent 定义（MCP agent_delete 用）：物理删除；Agent 为全局资产，删除记 WARN 强化审计；系统级 Agent 拒绝。 */
   app.post("/agents/delete", async (c) => {
-    if (!resolveProjectId(deps, c)) return bad(c, "无法解析 project_path");
-    const b = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const id = typeof b?.id === "string" ? b.id : "";
+    const b = await bodyOf(c);
+    if (!resolveProjectId(b)) return bad(c, "无法解析 project_path");
+    const id = str(b, "id");
     if (!id) return bad(c, "id 必填");
     const existing = deps.assets.getAgent(id);
     if (!existing) return notFound(c, "agent", id);
+    if (existing.system) return bad(c, `系统级 Agent 不可删除：${existing.name}`);
     log.warn({ id, name: existing.name }, "MCP 删除 Agent 定义（全局资产）");
     deps.assets.deleteAgent(id);
     return ok(c, { deleted: true, id });
   });
 
   // ── memory ──
-  app.get("/memory/search", async (c) => {
-    const projectId = resolveProjectId(deps, c);
+  app.post("/memory/search", async (c) => {
+    const b = await bodyOf(c);
+    const projectId = resolveProjectId(b);
     if (!projectId) return bad(c, "无法解析 project_path");
-    const query = c.req.query("query") ?? "";
-    const topK = intQuery(c, "top_k", deps.settings.getInt("l1_recall_top_k"));
-    const hits = await deps.recaller.search(projectId, query, topK);
+    const query = str(b, "query");
+    if (!query) return bad(c, "query 必填");
+    const topKRaw = typeof b.top_k === "number" && b.top_k > 0 ? Math.trunc(b.top_k) : deps.settings.getInt("memory_recall_top_k");
+    const hits = await deps.recaller.search(projectId, query, topKRaw);
     return ok(c, hits);
   });
-  app.get("/memory/read", (c) => {
-    const id = c.req.query("id");
-    if (!id) return bad(c, "id 必填");
-    const r = deps.l1.readWithSources(id);
-    if (!r) return notFound(c, "memory", id);
-    return ok(c, {
-      id: r.record.id,
-      kind: r.record.kind,
-      content: r.record.content,
-      priority: r.record.priority,
-      sceneName: r.record.sceneName,
-      metadata: r.record.metadata,
-      sources: r.sources,
-    });
-  });
-  // 分页读取项目全部活跃记忆（MCP memory_batch_read 用；决策 79 替代按 id 逐条读的 memory_read 工具面）
-  app.get("/memory/batch-read", (c) => {
-    const projectId = resolveProjectId(deps, c);
+
+  // ── 记忆整理工具面 ──
+  // 写类 4 工具靠红线文案（仅限记忆整理Agent）+ WARN 审计约束，不设口令闸。
+
+  app.post("/memory/list", async (c) => {
+    const b = await bodyOf(c);
+    const projectId = resolveProjectId(b);
     if (!projectId) return bad(c, "无法解析 project_path");
-    const page = Math.max(1, intQuery(c, "page", 1));
-    const pageSize = Math.min(100, Math.max(1, intQuery(c, "page_size", 20)));
-    const { items, total } = deps.l1.listActivePaged(projectId, (page - 1) * pageSize, pageSize);
+    const page = typeof b.page === "number" && b.page > 0 ? Math.trunc(b.page) : 1;
+    const pageSize = Math.min(200, typeof b.pageSize === "number" && b.pageSize > 0 ? Math.trunc(b.pageSize) : 50);
+    const kindRaw = str(b, "kind");
+    if (kindRaw && !isMemoryKind(kindRaw)) return bad(c, `非法 kind: ${kindRaw}`);
+    const scope = str(b, "scope") === "archived" ? "archived" as const : "active" as const;
+    const { rows, totalCount } = deps.memories.listPaged(projectId, {
+      page, pageSize,
+      kind: kindRaw ? (kindRaw as MemoryKind) : undefined,
+      keyword: str(b, "keyword") || undefined,
+      scope,
+    });
     return ok(c, {
-      list: items.map((r) => ({
-        id: r.id,
-        kind: r.kind,
-        content: r.content,
-        priority: r.priority,
-        sceneName: r.sceneName,
-        createdAt: r.createdAt,
-        updatedAt: r.updatedAt,
+      page, pageSize, totalCount,
+      list: rows.map((m) => ({
+        id: m.id, kind: m.kind, content: m.content, priority: m.priority,
+        sceneName: m.sceneName, createdAt: m.createdAt,
+        ...(scope === "archived" ? { archiveBatch: m.archiveBatch } : {}),
       })),
-      total,
-      page,
-      pageSize,
     });
   });
-  /**
-   * 批量改写记忆正文（MCP memory_batch_update 用，决策 79）：items 逐条处理，
-   * 复用 updateContent 的 FTS 重建 + 向量失效补嵌入链路。删除归 /memory/batch-delete。
-   * 部分成功语义：单条失败不影响其余，成功与失败均逐条返回。
-   */
-  app.post("/memory/batch-update", async (c) => {
-    const b = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const projectId = resolveProjectId(deps, c);
+
+  app.post("/profile/read", async (c) => {
+    const b = await bodyOf(c);
+    const projectId = resolveProjectId(b);
     if (!projectId) return bad(c, "无法解析 project_path");
-    const rawItems = b?.items;
-    if (!Array.isArray(rawItems) || !rawItems.length) return bad(c, "items 需为非空数组");
-    if (rawItems.length > 20) return bad(c, "单批最多 20 条");
-    const results: Record<string, unknown>[] = [];
-    for (const it of rawItems) {
-      const item = (it ?? {}) as Record<string, unknown>;
-      const id = typeof item.id === "string" ? item.id : "";
-      const guard = guardActionableMemory(deps, id, projectId);
-      if (guard) {
-        results.push({ id, ok: false, error: guard });
-        continue;
-      }
-      const content = typeof item.content === "string" ? item.content.trim() : "";
-      if (!content) {
-        results.push({ id, ok: false, error: "content 需为非空字符串" });
-        continue;
-      }
-      if (content.length > 2000) {
-        results.push({ id, ok: false, error: "content 超 2000 字符上限，请拆分" });
-        continue;
-      }
-      try {
-        const { changed } = deps.l1.updateContent(id, content);
-        results.push({ id, ok: true, changed });
-      } catch (err) {
-        results.push({ id, ok: false, error: String(err) });
-      }
-    }
-    const applied = results.filter((r) => r.ok).length;
-    return ok(c, { results, applied, skipped: results.length - applied });
-  });
-  /**
-   * 批量物理删除记忆（MCP memory_batch_delete 用）：ids 数量不设上限（删除是收敛动作，
-   * 不该被分片折腾），逐条校验有效性与项目归属，物理删除与管理台决策 56 一致。
-   * 为免撑爆模型上下文：成功只计数（applied），失败才逐条返回原因。
-   */
-  app.post("/memory/batch-delete", async (c) => {
-    const b = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const projectId = resolveProjectId(deps, c);
-    if (!projectId) return bad(c, "无法解析 project_path");
-    const rawIds = b?.ids;
-    if (!Array.isArray(rawIds) || !rawIds.length) return bad(c, "ids 需为非空数组");
-    const failures: Record<string, unknown>[] = [];
-    let applied = 0;
-    for (const rid of rawIds) {
-      const id = typeof rid === "string" ? rid : "";
-      const guard = guardActionableMemory(deps, id, projectId);
-      if (guard) {
-        failures.push({ id, ok: false, error: guard });
-        continue;
-      }
-      try {
-        if (deps.l1.remove(id)) applied++;
-        else failures.push({ id, ok: false, error: "删除失败（行不存在）" });
-      } catch (err) {
-        failures.push({ id, ok: false, error: String(err) });
-      }
-    }
-    return ok(c, { results: failures, applied, skipped: rawIds.length - applied });
-  });
-  app.get("/memory/profile", (c) => {
-    const projectId = resolveProjectId(deps, c);
-    if (!projectId) return bad(c, "无法解析 project_path");
-    const { content, version, updatedAt } = deps.l2.readMeta(projectId);
+    const { content, version, updatedAt } = deps.profiles.readMeta(projectId);
     return ok(c, { content, version, updatedAt });
   });
-  /**
-   * 保存 L2 画像（MCP memory_profile_update 用，决策 80）：整篇覆盖，
-   * 复用 L2Refiner.save 的"内容变化才写库、version 自增"语义（与管理台 save-profile 一致，
-   * 不做 l2_max_chars 截断——长度约束由凝练管线负责）。
-   */
-  app.post("/memory/save-profile", async (c) => {
-    const projectId = resolveProjectId(deps, c);
+
+  app.post("/memory/archive", async (c) => {
+    const b = await bodyOf(c);
+    const projectId = resolveProjectId(b);
     if (!projectId) return bad(c, "无法解析 project_path");
-    const b = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    const content = typeof b?.content === "string" ? b.content.trim() : "";
-    if (!content) return bad(c, "content 需为非空字符串");
-    const { changed, version } = deps.l2.save(projectId, content);
+    const ids = Array.isArray(b.ids) ? b.ids.map(String).filter(Boolean) : [];
+    if (!ids.length) return bad(c, "ids 必填（非空数组）");
+    if (ids.length > 200) return bad(c, "单批归档不超过 200 条，请分批");
+    const reason = str(b, "reason") || undefined;
+    const { batchId, archived } = deps.memories.archiveBatchOf(projectId, ids, reason);
+    log.warn({ projectId, batchId, archived, ids: ids.slice(0, 50), via: "mcp" }, "记忆整理：批量归档");
+    return ok(c, { batchId, archived });
+  });
+
+  app.post("/memory/restore", async (c) => {
+    const b = await bodyOf(c);
+    const projectId = resolveProjectId(b);
+    if (!projectId) return bad(c, "无法解析 project_path");
+    const batchId = str(b, "batch_id");
+    const ids = Array.isArray(b.ids) ? b.ids.map(String).filter(Boolean) : [];
+    if (!batchId && !ids.length) return bad(c, "batch_id 与 ids 至少提供一项");
+    const restored = deps.memories.restore(projectId, batchId ? { batchId } : { ids });
+    log.warn({ projectId, batchId: batchId || null, idCount: ids.length, restored, via: "mcp" }, "记忆整理：撤销归档");
+    return ok(c, { restored });
+  });
+
+  app.post("/memory/update", async (c) => {
+    const b = await bodyOf(c);
+    const projectId = resolveProjectId(b);
+    if (!projectId) return bad(c, "无法解析 project_path");
+    const id = str(b, "id");
+    if (!id) return bad(c, "id 必填");
+    const existing = deps.memories.findById(id);
+    if (!existing || existing.projectId !== projectId || existing.deletedAt !== null) return notFound(c, "memory", id);
+    const content = str(b, "content");
+    const priority = typeof b.priority === "number" && Number.isFinite(b.priority) ? Math.trunc(b.priority) : undefined;
+    if (!content && priority === undefined) return bad(c, "content 与 priority 至少提供一项");
+    const updated = deps.memories.update(id, { content: content || undefined, priority });
+    if (!updated) return notFound(c, "memory", id);
+    log.warn({ projectId, id, via: "mcp" }, "记忆整理：改写记忆");
+    return ok(c, { id: updated.id, content: updated.content, priority: updated.priority });
+  });
+
+  app.post("/profile/save", async (c) => {
+    const b = await bodyOf(c);
+    const projectId = resolveProjectId(b);
+    if (!projectId) return bad(c, "无法解析 project_path");
+    const content = typeof b.content === "string" ? b.content : "";
+    if (!content.trim()) return bad(c, "content 必填");
+    const { changed, version } = deps.profiles.save(projectId, content);
+    log.warn({ projectId, changed, version, via: "mcp" }, "记忆整理：回写画像");
     return ok(c, { changed, version });
   });
 
-  // ── SQL 只读查询（外部业务库；连接串由调用方直传，不在本库登记）──
-  // 四方言共用端点，方言走路径段：/sql/<dialect>/query（表结构元数据工具已移除，模型按需 SELECT 系统表）
-  app.get("/sql/:dialect/query", async (c) => {
-    const dialect = c.req.param("dialect");
-    if (!isDialect(dialect)) return bad(c, `不支持的数据库类型: ${dialect}`);
-    const connectionString = c.req.query("connection_string") ?? "";
-    const statement = c.req.query("sql") ?? "";
-    if (!connectionString.trim()) return bad(c, "connection_string 必填");
-    if (!statement.trim()) return bad(c, "sql 必填");
-    return sqlResult(c, () => deps.sql.query(dialect, connectionString, statement));
+  // ── SQL 只读查询（新功能 2：按项目 + 连接名解析连接）──
+  /** 列出项目可用数据库连接（名称 + 类型，不回显连接串）。 */
+  app.post("/sql/conns", async (c) => {
+    const b = await bodyOf(c);
+    const projectPath = str(b, "project_path");
+    if (!projectPath) return bad(c, "project_path 必填");
+    const conns = deps.sql.listConnections(projectPath);
+    if (conns === null) return ok(c, { error: `无法解析项目：${projectPath}（未登记或已删除）` });
+    return ok(c, { connections: conns });
+  });
+
+  app.post("/sql/query", async (c) => {
+    const b = await bodyOf(c);
+    const projectPath = str(b, "project_path");
+    const conn = str(b, "conn");
+    const sql = str(b, "sql");
+    if (!projectPath) return bad(c, "project_path 必填");
+    if (!conn) return bad(c, "conn 必填（连接名，可先用 list_db_connections 查询）");
+    if (!sql) return bad(c, "sql 必填");
+    // 查询失败/未配置连接以 { error } 作为**数据**返回（ok:true），
+    // 让模型看到具体原因并自我修正，而不是被 MCP 客户端包成笼统的 tool 调用失败。
+    const result = await deps.sql.queryByProject(projectPath, conn, sql);
+    if (!result.ok) return ok(c, { error: result.error });
+    const notice = result.truncated
+      ? `（结果超过 ${deps.settings.getInt("sql_query_max_rows")} 行已截断，请加 LIMIT 或收窄条件）`
+      : undefined;
+    return ok(c, { rows: result.rows, ...(notice ? { notice } : {}) });
   });
 
   return app;
-}
-
-const SQL_DIALECTS: readonly SqlDialect[] = ["sqlite", "postgresql", "mysql", "sqlserver"];
-
-function isDialect(d: string): d is SqlDialect {
-  return (SQL_DIALECTS as readonly string[]).includes(d);
-}
-
-/**
- * SQL 端点统一响应：校验/查询失败以 `{ error }` 作为**数据**返回（ok:true），
- * 让模型看到具体原因并自我修正（改 SQL / 检查连接串），而不是被 MCP 客户端包成
- * 笼统的 tool 调用失败（同 C# 版 QueryFailed 的设计意图）。
- */
-async function sqlResult(c: Context, run: () => Promise<unknown>) {
-  try {
-    return ok(c, await run());
-  } catch (err) {
-    if (err instanceof SqlError) return ok(c, { error: err.message });
-    log.error({ err: String(err) }, "SQL 端点异常");
-    return ok(c, { error: `查询失败：${String(err)}` });
-  }
-}
-
-/** project_path（query）→ projectId（规范化后查库）。 */
-function resolveProjectId(deps: InternalDeps, c: Context): string | null {
-  const rawPath = c.req.query("project_path");
-  if (!rawPath) return null;
-  const norm = normalizeProjectPath(rawPath);
-  const p = deps.projects.findByPath(norm);
-  if (!p) return null;
-  return p.id;
-}
-
-/** 批量改/删的前置校验：返回失败原因，通过则 null。 */
-function guardActionableMemory(deps: InternalDeps, id: string, projectId: string): string | null {
-  if (!id) return "id 必填";
-  const existing = deps.l1.get(id);
-  if (!existing || existing.deletedAt !== null || existing.supersededBy !== null) {
-    return "记忆不存在或已失效";
-  }
-  if (existing.projectId !== projectId) return "记忆不属于该项目";
-  return null;
-}
-
-function intQuery(c: Context, key: string, dflt: number): number {
-  const v = c.req.query(key);
-  const n = v ? Number.parseInt(v, 10) : NaN;
-  return Number.isFinite(n) && n > 0 ? n : dflt;
 }
 
 function ok(c: Context, data: unknown) {

@@ -5,59 +5,37 @@ import { localLogStamp } from "./localtime.js";
 import { logsDir } from "./paths.js";
 
 /**
- * 日志工厂（DESIGN.md §5 日志方案）。
+ * 日志工厂。
  *
  * - pino 结构化日志，级别默认 info（LOG_LEVEL 可临时调 debug）。
  * - 落盘：{DATA_DIR}/Logs/{yyyy}/{MM}/{dd}/{HH}.txt，每小时一个文件（全项目唯一日志出口）。
- * - 行格式：`时间戳 [LEVEL] [模块] 消息 {结构化字段}`。
- *
- * 日志面规范：常规信息只保留三类（L1 提取 L0→L1、L2 凝练 L1→L2、L1 召回注入），
- * 其余仅落异常与降级告警；常规操作类日志不写文件。
+ * - LOG_FORMAT=text（默认）：人读行；LOG_FORMAT=json：pino 原始 JSON 行。
  */
 
 const LEVEL = process.env.LOG_LEVEL || "info";
+const AS_TEXT = (process.env.LOG_FORMAT ?? "text") !== "json";
 
-/** 把 HourlyRotatingWriter 包装成 Node Writable，供 pino 作为目标流。 */
-function buildSinkStream(root: string): Writable {
-  const writer = new HourlyRotatingWriter(root);
-  return new Writable({
-    write(chunk, _enc, cb) {
-      writer.writeLine(chunk.toString());
-      cb();
-    },
-  });
+let sharedWriter: HourlyRotatingWriter | null = null;
+function writer(): HourlyRotatingWriter {
+  if (!sharedWriter) sharedWriter = new HourlyRotatingWriter(logsDir());
+  return sharedWriter;
 }
 
-let sharedRoot: string | null = null;
-function logRoot(): string {
-  if (!sharedRoot) sharedRoot = logsDir();
-  return sharedRoot;
-}
-
-/**
- * 创建带模块名的 logger。
- * @param module 模块标识，如 "gateway" / "memory" / "settings"
- */
+/** 创建带模块名的 logger。@param module 模块标识，如 "gateway" / "memory" / "db" */
 export function createLogger(module: string): Logger {
-  const sink = buildSinkStream(logRoot());
-
   return pino(
     {
       level: LEVEL,
       base: undefined, // 去掉 hostname/pid 等默认字段
       timestamp: () => `,"ts":"${localLogStamp()}"`,
-      formatters: {
-        level: (label) => ({ level: label }),
-      },
-      // 用 prettifier 之外的方式：直接自定义 transport 不可行（无 worker），
-      // 因此这里用 mixin 注入 module，并在下面通过自定义 stream 前做格式化。
+      formatters: { level: (label) => ({ level: label }) },
       mixin: () => ({ module }),
     },
-    // 自定义格式化流：把 pino 输出的 JSON 行转成人读行
+    // 自定义格式化流：把 pino 输出的 JSON 行转成人读行再落盘（LOG_FORMAT=json 时原样输出）
     new Writable({
       write(chunk, _enc, cb) {
         const line = chunk.toString();
-        sink.write(formatLine(line));
+        writer().writeLine(AS_TEXT ? formatLine(line) : line);
         cb();
       },
     }),

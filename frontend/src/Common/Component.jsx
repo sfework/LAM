@@ -4,7 +4,7 @@ import { IconTreeTriangleDown } from '@douyinfe/semi-icons';
 import { getGuid } from '@sfework/common';
 
 /**
- * 通用组件套件（移植自参考实现的前端工程，class 组件写法保持一致）。
+ * 通用组件套件（class 组件写法）。
  * 与 @sfework/common 的分页模型（PaginationModel）直接对接：DataTable 吃
  * dataSource={list,totalCount,page,pageSize}，onPagination 回传 {page,pageSize}。
  */

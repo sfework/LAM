@@ -9,11 +9,15 @@ import {
 } from "./registry.js";
 import type { ModelRepo } from "../models/repo.js";
 import type { LlmCallConfig } from "../llm/client.js";
+import { createLogger } from "../infra/logger.js";
+import { colStr, getRows } from "../db/rows.js";
+
+const log = createLogger("settings");
 
 /**
  * 解析 modelRef 绑定值：`mdl_xxx` 或 `mdl_xxx:model-name`。
- * id 生成规则不含冒号，首个冒号后整段视为模型名（名内可含冒号则取首个分段——
- * OpenAI 模型名无冒号，此约定足够）。空值返回 { modelId: "" }。
+ * id 生成规则不含冒号，首个冒号后整段视为模型名（OpenAI 模型名无冒号，此约定足够）。
+ * 空值返回 { modelId: "" }。
  */
 export function parseModelBinding(value: string): { modelId: string; modelName: string } {
   const v = (value ?? "").trim();
@@ -30,7 +34,7 @@ export interface SettingEntry {
 }
 
 /**
- * 设置服务（DESIGN §2.10）。
+ * 设置服务。
  *
  * - 值以字符串存 settings 表；读取时按注册表解析为强类型。
  * - 热更新：内存缓存，写库后刷新缓存，下次读取即最新值，无需重启。
@@ -38,20 +42,27 @@ export interface SettingEntry {
  */
 export class SettingsService {
   private cache = new Map<string, string>();
-  private readonly raw: DatabaseSync;
+  private readonly db: DatabaseSync;
   private readonly models: ModelRepo;
 
-  constructor(raw: DatabaseSync, models: ModelRepo) {
-    this.raw = raw;
+  constructor(db: DatabaseSync, models: ModelRepo) {
+    this.db = db;
     this.models = models;
   }
 
-  /** 启动时载入全部设置，缺失的注册表项回填默认值。 */
+  /** 启动时载入全部设置，缺失的注册表项回填默认值；并清理注册表外的野键。 */
   init(): void {
-    const rows = this.raw.prepare("SELECT key, value, updated_at FROM settings").all() as unknown as SettingEntry[];
-    for (const r of rows) this.cache.set(r.key, r.value);
+    // settings 只由注册表驱动：前端按表渲染、set() 拒绝未知键，清理无副作用。
+    const ph = SETTING_DEFS.map(() => "?").join(",");
+    const dropped = this.db.prepare(`DELETE FROM settings WHERE key NOT IN (${ph})`).run(...SETTING_DEFS.map((d) => d.key));
+    if (dropped.changes > 0) {
+      log.info({ dropped: dropped.changes }, "清理注册表外的失效设置项");
+    }
 
-    const upsert = this.raw.prepare(
+    const rows = getRows(this.db, "SELECT key, value, updated_at FROM settings");
+    for (const r of rows) this.cache.set(colStr(r, "key"), colStr(r, "value"));
+
+    const upsert = this.db.prepare(
       "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING",
     );
     for (const def of SETTING_DEFS) {
@@ -85,8 +96,7 @@ export class SettingsService {
 
   /**
    * 解析模型绑定项，返回关联模型条目（提供商）；未配置或无效返回 undefined。
-   * 绑定值格式：`mdl_xxx` 或 `mdl_xxx:model-name`（冒号后为覆盖的模型名，
-   * 用于 model 留空的纯提供商条目；旧格式纯 id 完全兼容）。
+   * 绑定值格式：`mdl_xxx` 或 `mdl_xxx:model-name`（冒号后为覆盖的模型名）。
    */
   getResolvedModel(key: string) {
     const def = getSettingDef(key);
@@ -101,7 +111,6 @@ export class SettingsService {
 
   /**
    * 解析模型绑定项并组装为调用配置（baseUrl/apiKey/model）。
-   * 收口各管线（recall/backfill/scheduler/管理端）中重复的 getResolvedModel + 三字段组装；
    * 模型名优先取绑定值覆盖名，回退条目自身 model；两者皆空视为无效。
    * 未配置或无效返回 null（调用方据此降级）。
    */
@@ -139,7 +148,7 @@ export class SettingsService {
     return out;
   }
 
-  /** 写入（校验 + 落库 + 刷新缓存 + 通知订阅）。 */
+  /** 写入（校验 + 落库 + 刷新缓存）。 */
   set(key: string, value: string): SettingEntry {
     const def = getSettingDef(key);
     if (!def) throw new Error(`未知设置项: ${key}`);
@@ -163,7 +172,7 @@ export class SettingsService {
     }
 
     const now = Date.now();
-    this.raw
+    this.db
       .prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at")
       .run(key, value, now);
     this.cache.set(key, value);

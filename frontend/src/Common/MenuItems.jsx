@@ -10,7 +10,7 @@ import Memories from '../Views/Memories';
 import Tools from '../Views/Tools';
 
 /**
- * 菜单 = 路由 = 面包屑的单一数据源（参考项目约定）。
+ * 菜单 = 路由 = 面包屑的单一数据源。
  * itemKey 稳定唯一；url 对应 react-router 路径；element 为页面组件。
  * 本项目无鉴权，故不做 permissions 过滤。
  */

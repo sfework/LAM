@@ -1,23 +1,23 @@
 import type { ModelRepo, ModelInput, ModelCategory } from "../models/repo.js";
 import { normalizeModels } from "../models/repo.js";
 import type { SettingsService } from "../settings/service.js";
-import type { L1Store } from "../memory/l1-store.js";
+import type { MemoryRepo } from "../memory/memory-repo.js";
 import { postRoutes, requireStr, optStr, badRequest, notFound, listRoute, ApiError } from "./rest.js";
 
 /**
- * /api/models —— 模型库 CRUD（DESIGN §2.9、决策 45 + 47 + 49 + 77）。
+ * /api/models —— 模型库 CRUD。
  * POST /list { category?, keyword?, page?, pageSize? }   分页；keyword 模糊匹配名称/模型名；
  *        排序 LLM 靠前再按名称 ASC；每行附 inUse（是否被设置引用）与 usedBy（引用它的设置键）。
- *      /get { id } | /create { category,name,url,model,key }（model 可空：条目即“提供商”，
- *        绑定时可在设置里指定模型名；key 必填）
+ *      /get { id } | /create { category,name,url,model,key }（model 可空：条目即"提供商"，
+ *        绑定时可在设置里指定模型名）
  *      /fetch-list { id } 或 { url, key }：调提供商 GET {url}/models 读可用模型列表
  *        （OpenAI 兼容；10s 超时；失败/不支持时前端回退手输模型名）
- *      /update { id, ... }（决策 77：**可编辑** url/key/model/name，下一调用即生效；
+ *      /update { id, ... }（**可编辑** url/key/model/name，下一调用即生效；
  *        分类恒禁改动——改类等于换模型，会造成 modelCategory 校验静默失效，应走"新建 + 重绑"；
  *        被引用的 embedding 模型改 url/model 触发全量向量失效，由补嵌入下个 tick 按新模型重建）
  *      /delete { id }（被引用则禁止，防悬挂引用）
  */
-export function createModelsRouter(repo: ModelRepo, settings: SettingsService, l1?: L1Store) {
+export function createModelsRouter(repo: ModelRepo, settings: SettingsService, memories?: MemoryRepo) {
   const decorate = <T extends { id: string }>(row: T) => {
     const usedBy = settings.modelUsage(row.id);
     return { ...row, usedBy, inUse: usedBy.length > 0 };
@@ -46,7 +46,8 @@ export function createModelsRouter(repo: ModelRepo, settings: SettingsService, l
       }
       if (!url) badRequest("需要 id 或 url");
       return fetchProviderModels(url, key);
-    },    "/create": (b) => {
+    },
+    "/create": (b) => {
       const err = validateInput(b as unknown as Partial<ModelInput>, true);
       if (err) badRequest(err);
       const input = b as unknown as ModelInput;
@@ -61,9 +62,8 @@ export function createModelsRouter(repo: ModelRepo, settings: SettingsService, l
       const id = requireStr(b, "id");
       const before = repo.get(id) ?? notFound("模型不存在");
       const usedBy = settings.modelUsage(id);
-      // 决策 77：被引用可编辑（引用按 id 现查，下一调用即生效）；分类一律禁改——
-      // 改类会让 getResolvedModel 的 modelCategory 校验静默失效（如嵌入模型改成 llm → 向量化停摆），
-      // 且 llm/embedding 的 url/model 语义本就不同源，改类等于换模型，应走"新建 + 重绑"。
+      // 被引用可编辑（引用按 id 现查，下一调用即生效）；分类一律禁改——
+      // 改类会让 getResolvedModel 的 modelCategory 校验静默失效（如嵌入模型改成 llm → 向量化停摆）。
       if (b.category !== undefined && b.category !== before.category) {
         badRequest("编辑不可修改分类（如需换分类请新建模型并重绑设置）");
       }
@@ -93,14 +93,14 @@ export function createModelsRouter(repo: ModelRepo, settings: SettingsService, l
         modelMode: input.modelMode === "manual" ? "manual" : input.modelMode === "auto" ? "auto" : before.modelMode,
       }) ?? notFound("模型不存在");
       // 被引用的 embedding 模型 url/model 实质变化 → 新旧向量语义空间不同，
-      // 全量失效 mem_l1_vec，由补嵌入下个 tick 用新模型重建（DESIGN 决策 77）。
+      // 全量失效向量表，由补嵌入下个 tick 用新模型重建。
       if (
-        l1 &&
+        memories &&
         updated.category === "embedding" &&
         usedBy.length &&
         (updated.url !== before.url || updated.model !== before.model)
       ) {
-        const n = l1.invalidateAllVectors();
+        const n = memories.invalidateAllVectors();
         return { ...updated, vectorsInvalidated: n };
       }
       return updated;
@@ -120,7 +120,6 @@ function validateInput(b: Partial<ModelInput>, isCreate: boolean): string | null
     if (b.category !== "llm" && b.category !== "embedding") return "category 需为 llm 或 embedding";
     if (!b.name?.trim()) return "name 必填";
     if (!b.url?.trim()) return "url 必填";
-    if (!b.key?.trim()) return "key 必填";
   } else {
     if (b.category && b.category !== "llm" && b.category !== "embedding") return "category 需为 llm 或 embedding";
     if (b.name !== undefined && !b.name.trim()) return "name 不能为空";
@@ -133,9 +132,8 @@ function validateInput(b: Partial<ModelInput>, isCreate: boolean): string | null
 }
 
 /**
- * 调提供商 GET {url}/models（OpenAI 兼容口径：url 末尾自动补 /v1 已由调用方保证，
- * 此处只做 {url}/models 拼接与 { data: [{ id }] } 解析）。
- * 失败/超时/非标准响应抛可读文案（前端提示“该提供商不支持列表，请手输”）。
+ * 调提供商 GET {url}/models（OpenAI 兼容口径）。
+ * 失败/超时/非标准响应抛可读文案（前端提示"该提供商不支持列表，请手输"）。
  */
 export async function fetchProviderModels(
   baseUrl: string,

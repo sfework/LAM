@@ -1,19 +1,16 @@
 /**
- * 从请求正文解析工作区路径（DESIGN §2.1 预留扩展落地，移植自 C# 版实现）。
+ * 从请求正文解析工作区路径（无法传自定义 header 的客户端兜底定位项目）。
  *
- * VS Code 类客户端会把 <workspace_info> 段（形如 "- d:\Work\MyProject"）放进
- * 提示词，BYOK 等无法传自定义头的客户端即靠它定位项目。
- *
- * pi / Claude Code 等 CLI 类客户端无 <workspace_info> 段，但在 system 提示中
- * 固定注入工作目录：
- *   - pi v1.x：`<cwd>\nE:/Code/LAM\n</cwd>` 段（反斜杠已转正斜杠）；
+ * VS Code 类客户端会把 <workspace_info> 段（形如 "- d:\Work\MyProject"）放进提示词；
+ * pi / Claude Code 等 CLI 类客户端无该段，但在 system 提示中固定注入工作目录：
+ *   - pi v1.x：`<cwd>\nD:/Work/MyProj\n</cwd>` 段（反斜杠已转正斜杠）；
  *   - pi 旧版/扩展、Claude Code（<env> 块）：`Working directory: <path>` 行
  *     （含 Primary/Current 前缀变体，大小写不敏感）。
  * 均为 Windows/Unix 绝对路径，段缺失时按此顺序解析。
  *
  * 收紧口径：只认 <workspace_info> 段内的路径；段缺失时仅在指令消息
- * （system 或其别名 developer）内兜底（先认 cwd 段/标注行，再扫行首盘符路径）。
- * 用户消息与工具返回常含目录列表等 "- C:\..." 文本，纳入扫描会被登记成垃圾项目。
+ * （system 或其别名 developer）内兜底。用户消息与工具返回常含目录列表等
+ * "- C:\..." 文本，纳入扫描会被登记成垃圾项目。
  */
 
 interface MessageLike {
@@ -87,8 +84,7 @@ export function matchPath(text: string): string | null {
 
 /**
  * 匹配 system 内的 <cwd> 段（pi v1.x 系统提示固定渲染为
- * `<cwd>\nE:/Code/LAM\n</cwd>`）。取段内首行，仅当值为绝对路径时采用，
- * 否则返回 null 交回其他兜底规则。
+ * `<cwd>\nD:/Work/MyProj\n</cwd>`）。取段内首行，仅当值为绝对路径时采用。
  */
 export function matchCwdSection(text: string): string | null {
   if (!text) return null;
@@ -99,11 +95,9 @@ export function matchCwdSection(text: string): string | null {
 }
 
 /**
- * 匹配 cwd 标注行：pi（"Current working directory: ..."，含 SSH/Gondolin 扩展的
- * 行尾括号注释）、Claude Code（<env> 块内 "Working directory: ..."、
- * "Primary working directory: ..."）与 VS Code 智能体（同文案但带 "- " / "* "
- * bullet 前缀）。支持 Windows 盘符、Unix 绝对路径与 UNC；值不是绝对路径时返回
- * null，交回其他兜底规则。
+ * 匹配 cwd 标注行：pi（"Current working directory: ..."，含行尾括号注释）、
+ * Claude Code（"Working directory: ..."、"Primary working directory: ..."）与
+ * VS Code 智能体（同文案但带 "- " / "* " bullet 前缀）。值非绝对路径时返回 null。
  */
 export function matchCwdLine(text: string): string | null {
   if (!text) return null;

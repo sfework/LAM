@@ -5,7 +5,7 @@ import { useMenuHelp } from '../Common/Common';
 import { MenuItems } from '../Common/MenuItems';
 
 /**
- * 应用外壳：左侧 Nav + 右侧面包屑/内容区（参考项目同款布局）。
+ * 应用外壳：左侧 Nav + 右侧面包屑/内容区（同款布局）。
  * 菜单/路由/面包屑全部由 MenuItems 单一数据源驱动（useMenuHelp）。
  * 本项目无鉴权、无用户体系，故不含 UserTag / 登录。
  */

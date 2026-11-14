@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import plugin from '@vitejs/plugin-react';
 
-// 前端与后端同域同端口（DESIGN 决策 46）：
+// 前端与后端同域同端口：
 //   - 生产：vite build 产出 frontend/dist，由主服务在 :8790 直接托管（后端 SPA 回退）。
 //   - 开发：Vite dev server（:5173），把后端前缀代理到 :8790，开发期同样同源、无 CORS。
 // base 固定 '/'：产物用绝对路径 /assets/*，与 SPA 回退（根路径挂载）一致。

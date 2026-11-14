@@ -2,7 +2,7 @@ import { ToastUI } from './Component.jsx';
 import { NetBase, NetBaseConfig } from '@sfework/common';
 
 /**
- * 请求层（DESIGN 决策 47）：复用 @sfework/common 的 NetBase，area='api'。
+ * 请求层：复用 @sfework/common 的 NetBase，area='api'。
  * 调用姿势：Net.api.<资源>.<动作>(body) → POST /api/<资源>/<动作>，body 为 JSON。
  *   - 多段资源/动作用方括号取属性保留连字符：
  *       Net.api['denoise-rules']['get-by-path']({ path })

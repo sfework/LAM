@@ -3,7 +3,7 @@ import { SettingValidationError, type SettingsService } from "../settings/servic
 import { postRoutes, requireStr, badRequest, notFound, listRoute } from "./rest.js";
 
 /**
- * /api/settings —— 系统设置读写（热更新，DESIGN §2.10、决策 45 + 47）。
+ * /api/settings —— 系统设置读写（热更新）。
  * POST /list { page?, pageSize? }   全部设置（含元数据，供前端按注册表渲染；分页 PaginationModel）
  * POST /get   { key }               单项
  * POST /set   { key, value }        更新（value 为字符串，服务端按类型校验；modelRef 校验模型存在与分类）

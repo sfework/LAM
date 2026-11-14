@@ -1,8 +1,10 @@
 /**
- * MCP 薄壳的工具定义（DESIGN §3、决策 9：工具自描述）。
- * 每个工具映射到主服务 /internal/* 的一个只读端点；project_path 作为参数由模型回传
- * （注入块里已带项目路径，见 DESIGN §2.6）。
- * （CodeGraph 8 工具已随功能整体移除。）
+ * MCP 工具定义（工具自描述，单一事实源）。
+ * 每个工具映射到主服务 /internal/* 的端点；project_path 作为参数由模型回传
+ * （注入快照里已带项目路径）。
+ *
+ * 与旧版差异：
+ *  - 4 个方言 sql_query 工具合并为单个 sql_query（新功能 2：按项目 + 连接名解析连接，方言自动路由）。
  */
 
 export interface ToolDef {
@@ -19,41 +21,6 @@ const PROJECT_PATH_PROP = {
   type: "string",
   description: "当前项目的工作区绝对路径（从系统提示 <project> 段的 path 字段原样复制，用于按项目隔离检索）。",
 };
-
-/** 方言 → 工具名后缀与连接串格式说明（写进描述，让模型知道该传什么）。 */
-const SQL_DIALECTS: { key: string; label: string; conn: string }[] = [
-  { key: "sqlite", label: "SQLite", conn: "数据库文件绝对路径（如 e:/data/app.db），或 Data Source=... 形式" },
-  { key: "postgresql", label: "PostgreSQL", conn: "postgres://user:pass@host:5432/dbname，或 keyword=value 形式" },
-  { key: "mysql", label: "MySQL", conn: "mysql://user:pass@host:3306/dbname，或 Server=...;Database=...;Uid=...;Pwd=...;" },
-  { key: "sqlserver", label: "SQL Server", conn: "Server=host,1433;Database=db;User Id=sa;Password=...;TrustServerCertificate=True;" },
-];
-
-/** 生成 4 个 SQL 工具定义（每方言一个），端点按方言走路径段。
- * 注意：knowledge/agent 的 list 工具已移除（决策 70）——清单已注入系统提示，模型按 id 直接 read 即可；
- * internal 的 knowledge/agents list 端点保留（供管理台与 simulate-usage 脚本使用）。
- * （技能 skill 资产与 skill_read 工具已随功能整体移除。） */
-function sqlToolDefs(): ToolDef[] {
-  const defs: ToolDef[] = [];
-  for (const d of SQL_DIALECTS) {
-    const connProp = { type: "string", description: `连接字符串（${d.conn}）。` };
-    defs.push({
-      name: `sql_query_${d.key}`,
-      description:
-        `${d.label} 只读查询，结果为 JSON 行数组。仅允许单条 SELECT/WITH 语句；含 INSERT、UPDATE、DELETE、DROP 等写操作关键字或一次多条语句会被拒绝。结果超行数上限会截断并提示。`,
-      inputSchema: {
-        type: "object",
-        properties: {
-          connection_string: connProp,
-          sql: { type: "string", description: "要执行的 SELECT 查询语句（单条）。" },
-        },
-        required: ["connection_string", "sql"],
-        additionalProperties: false,
-      },
-      endpoint: `/internal/sql/${d.key}/query`,
-    });
-  }
-  return defs;
-}
 
 export const TOOL_DEFS: ToolDef[] = [
   {
@@ -157,7 +124,7 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "agent_delete",
     description:
-      "按 id 物理删除 Agent 定义（不可恢复；Agent 为全局资产，删除会记 WARN 审计日志）。不计入检索限流。【使用红线】写操作：除非用户明确要求删除 Agent，否则禁止自行调用。",
+      "按 id 物理删除 Agent 定义（不可恢复；Agent 为全局资产，删除会记 WARN 审计日志；系统级 Agent 不可删除）。不计入检索限流。【使用红线】写操作：除非用户明确要求删除 Agent，否则禁止自行调用。",
     inputSchema: {
       type: "object",
       properties: {
@@ -171,7 +138,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     name: "memory_search",
-    description: "检索项目结构化记忆（L1，原子事实/偏好/决策/方法）。返回 id 与内容摘要，配合 memory_batch_read 取原文溯源。每轮最多调用 3 次（防检索死循环）。",
+    description: "检索项目结构化记忆（原子事实/偏好/决策/方法）。返回 id 与内容摘要。每轮最多调用 3 次（防检索死循环）。",
     inputSchema: {
       type: "object",
       properties: {
@@ -185,97 +152,133 @@ export const TOOL_DEFS: ToolDef[] = [
     endpoint: "/internal/memory/search",
     searchFamily: true,
   },
+  // ── 记忆整理工具面：2 只读 + 4 写类（红线文案约束，不设口令闸）──
   {
-    name: "memory_batch_read",
+    name: "memory_list",
     description:
-      "分页读取当前项目的全部活跃结构化记忆（含 id/类型/正文/优先级/时间），用于记忆审计、清理与批量维护前的全量盘点。按创建时间从早到晚排列（越早的记忆越靠前，第 1 页为最老条目）；单条检索请用 memory_search。不计入检索限流。",
+      "分页枚举项目记忆（id/类型/优先级/情境/正文/生成时间）。scope=active（默认，活跃记忆）或 archived（已归档，附批次号，供复查）。只读工具，不计检索限流。【使用红线】读操作：大结果集请分页取，勿一次拉全量塞上下文。",
     inputSchema: {
       type: "object",
       properties: {
         project_path: PROJECT_PATH_PROP,
-        page: { type: "number", description: "页码，从 1 开始（默认 1）。" },
-        page_size: { type: "number", description: "单页条数（默认 20，上限 100）。" },
+        page: { type: "number", description: "页码（缺省 1）。" },
+        pageSize: { type: "number", description: "每页条数（缺省 50，上限 200）。" },
+        kind: { type: "string", enum: ["persona", "episodic", "instruction", "fact", "method", "artifact"], description: "按类型筛选（可选）。" },
+        keyword: { type: "string", description: "正文模糊筛选（可选）。" },
+        scope: { type: "string", enum: ["active", "archived"], description: "缺省 active；archived 查看已归档记忆。" },
       },
       required: ["project_path"],
       additionalProperties: false,
     },
-    endpoint: "/internal/memory/batch-read",
+    endpoint: "/internal/memory/list",
   },
   {
-    name: "memory_batch_update",
-    description:
-      "批量改写项目结构化记忆正文（仅 update，不含删除；删除请用 memory_batch_delete），用于 Agent 主动修正错述、合并改写。items 单批最多 20 条，每条 content 必填且 ≤2000 字符。逐条返回结果，单条失败不影响其余。不计入检索限流。【使用红线】写操作：允许修正本轮召回块（<recalled>）中确认有误/过时的条目；其余场景除非用户明确要求整理/维护记忆，否则禁止自行调用。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        project_path: PROJECT_PATH_PROP,
-        items: {
-          type: "array",
-          description: "批量改写清单（最多 20 条）。",
-          items: {
-            type: "object",
-            properties: {
-              id: { type: "string", description: "记忆 id（来自 memory_search / memory_batch_read）。" },
-              content: { type: "string", description: "新正文（必填，≤2000 字符，覆盖原正文）。" },
-            },
-            required: ["id", "content"],
-            additionalProperties: false,
-          },
-        },
-      },
-      required: ["project_path", "items"],
-      additionalProperties: false,
-    },
-    endpoint: "/internal/memory/batch-update",
-  },
-  {
-    name: "memory_batch_delete",
-    description:
-      "批量物理删除项目结构化记忆（不可恢复），用于清理过时、错误或已确认对当前项目无用的条目。ids 单批数量不限，逐条校验有效性与项目归属；为控制上下文体积，成功只返回计数（applied），失败才逐条返回原因。不计入检索限流。【使用红线】写操作：允许删除本轮召回块（<recalled>）中确认已失效的条目（须先反证）；其余场景除非用户明确要求删除/维护记忆，否则禁止自行调用。",
-    inputSchema: {
-      type: "object",
-      properties: {
-        project_path: PROJECT_PATH_PROP,
-        ids: {
-          type: "array",
-          description: "待删除的记忆 id 列表（来自 memory_search / memory_batch_read）。",
-          items: { type: "string" },
-        },
-      },
-      required: ["project_path", "ids"],
-      additionalProperties: false,
-    },
-    endpoint: "/internal/memory/batch-delete",
-  },
-  {
-    name: "memory_profile_read",
-    description:
-      "读取当前项目的 L2 画像全文（技术栈/约定/偏好/经验等稳定上下文的凝练文档，快照每轮常驻注入）。返回 content、version、updatedAt。画像工具面仅开放读/整篇覆盖写，无 create/delete：新建由凝练管线自动完成，删除/重置归管理台。不计入检索限流。",
+    name: "profile_read",
+    description: "读取项目画像全文与版本号。只读；子代理上下文缺 <memory> 段或核对画像残留段落时使用。",
     inputSchema: {
       type: "object",
       properties: { project_path: PROJECT_PATH_PROP },
       required: ["project_path"],
       additionalProperties: false,
     },
-    endpoint: "/internal/memory/profile",
+    endpoint: "/internal/profile/read",
   },
   {
-    name: "memory_profile_update",
+    name: "memory_archive",
     description:
-      "整篇覆盖保存当前项目的 L2 画像（先 memory_profile_read 取原文，在其基础上编辑后提交全量 content）。内容实质未变时不写库、version 不自增。画像为凝练文档，禁止追加拼接式提交；无删除工具，重置/清空归管理台。不计入检索限流。【使用红线】写操作：除非用户明确要求修改项目画像，否则禁止自行调用。",
+      "批量归档记忆（软删，可恢复）：置 deleted_at + 批次号，行/索引/向量原地保留；返回 batch_id 供 memory_restore 回滚。单批不超过 200 条。不计检索限流。【使用红线】仅限「记忆整理Agent」调用；其他任何角色（含主助手）禁止调用——用户要求修改记忆时应委派记忆整理Agent。",
     inputSchema: {
       type: "object",
       properties: {
         project_path: PROJECT_PATH_PROP,
-        content: { type: "string", description: "画像全文（Markdown，非空；覆盖原画像）。" },
+        ids: { type: "array", items: { type: "string" }, description: "待归档记忆 id 数组（≤200）。" },
+        reason: { type: "string", description: "一句判定依据（写入各条 metadata.archive_reason）。" },
+      },
+      required: ["project_path", "ids"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/memory/archive",
+  },
+  {
+    name: "memory_restore",
+    description:
+      "撤销归档：按 batch_id 整批恢复，或按 ids 逐条恢复（清除 deleted_at/批次号）。不计检索限流。【使用红线】仅限「记忆整理Agent」调用；其他任何角色禁止调用。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_path: PROJECT_PATH_PROP,
+        batch_id: { type: "string", description: "归档批次号（memory_archive 返回值）。" },
+        ids: { type: "array", items: { type: "string" }, description: "或按 id 列表恢复。" },
+      },
+      required: ["project_path"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/memory/restore",
+  },
+  {
+    name: "memory_update",
+    description:
+      "改写单条记忆正文/优先级（整理判定 update 的执行入口；内容变化自动重建 FTS、失效向量待补嵌入）。不计检索限流。【使用红线】仅限「记忆整理Agent」调用；其他任何角色（含主助手）禁止调用——用户要求修改记忆时应委派记忆整理Agent。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_path: PROJECT_PATH_PROP,
+        id: { type: "string", description: "记忆 id（须属于本项目且活跃）。" },
+        content: { type: "string", description: "新正文（现状陈述，一条一事）。" },
+        priority: { type: "number", description: "新优先级（0-100，可选）。" },
+      },
+      required: ["project_path", "id"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/memory/update",
+  },
+  {
+    name: "profile_save",
+    description:
+      "回写项目画像（整理收尾：基于保留记忆重写全文；version 自增，内容未变则跳过）。不计检索限流。【使用红线】仅限「记忆整理Agent」调用；其他任何角色（含主助手）禁止调用。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_path: PROJECT_PATH_PROP,
+        content: { type: "string", description: "画像全文（Markdown，只写最终形态）。" },
       },
       required: ["project_path", "content"],
       additionalProperties: false,
     },
-    endpoint: "/internal/memory/save-profile",
+    endpoint: "/internal/profile/save",
   },
-  // ── SQL 只读查询（四方言 × query；不依赖 project_path，不计入检索限流）──
-  ...sqlToolDefs(),
+  {
+    name: "list_db_connections",
+    description:
+      "列出项目配置的数据库连接（返回连接名 name 与类型 db_type，不返回连接串）。" +
+      "调用 sql_query 前先用本工具获知该项目可用的连接名。",
+    inputSchema: {
+      type: "object",
+      properties: { project_path: PROJECT_PATH_PROP },
+      required: ["project_path"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/sql/conns",
+  },
+  {
+    name: "sql_query",
+    description:
+      "对项目配置的数据库连接执行只读查询，结果为 JSON 行数组。" +
+      "需传入项目目录 project_path 与连接名 conn（连接名由 list_db_connections 获取，类型随连接确定无需另传），方言自动路由，无需传连接串。" +
+      "连接名不存在时返回错误并提示该项目可用连接列表。" +
+      "仅允许单条 SELECT/WITH 语句；含 INSERT、UPDATE、DELETE、DROP 等写操作关键字或一次多条语句会被拒绝。结果超行数上限会截断并提示。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_path: PROJECT_PATH_PROP,
+        conn: { type: "string", description: "连接名（来自 list_db_connections 的 name）。" },
+        sql: { type: "string", description: "要执行的 SELECT 查询语句（单条）。" },
+      },
+      required: ["project_path", "conn", "sql"],
+      additionalProperties: false,
+    },
+    endpoint: "/internal/sql/query",
+  },
 ];
 
 export const SEARCH_FAMILY_LIMIT = 3;

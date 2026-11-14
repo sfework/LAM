@@ -1,11 +1,11 @@
 import React from 'react';
 import { MergeSearch } from '@sfework/common';
-import { Button, Form, Switch, ButtonGroup, Row, Col } from '@douyinfe/semi-ui';
+import { Button, Form, Switch, ButtonGroup, Row, Col, Tag, Tooltip } from '@douyinfe/semi-ui';
 import { TablePage, SearchBox, DataTable, UIFormModal, ToastUI, DeleteConfirm } from './Component';
 import Net from './Net';
 
 /**
- * 资产 CRUD 通用页（agents / knowledge 同构，DESIGN §2.4 / §2.5、决策 45/47）。
+ * 资产 CRUD 通用页（agents / knowledge 同构，）。
  * 参照提示词页：列表「不显示正文、显示描述」，标题列（原名称列改名「标题」），按 sortOrder 升序，
  * 启用仅在列表切换（走 update{enabled}）、编辑弹窗隐藏启用；搜索 = 关键字（标题+描述模糊）+ 启用状态。
  *
@@ -76,19 +76,35 @@ class AssetPage extends React.Component {
                 title: '启用', dataIndex: 'enabled', width: 70,
                 render: (text, item) => <Switch checked={!!text} onChange={() => this.toggle(item)} />,
             },
-            { title: '标题', dataIndex: titleKey, width: 200, ellipsis: true },
+            {
+                title: '标题', dataIndex: titleKey, width: 200, ellipsis: true,
+                render: (text, item) => (
+                    <span>{text}{item.system ? <Tag size='small' color='orange' style={{ marginLeft: 6 }}>系统</Tag> : null}</span>
+                ),
+            },
             { title: '描述', dataIndex: 'description', ellipsis: true },
             ...extraColumns,
             { title: '排序', dataIndex: 'sortOrder', width: 70 },
             {
-                title: '操作', dataIndex: 'operate', width: 138,
+                title: '操作', dataIndex: 'operate', width: 150,
                 render: (text, item) => (
-                    <ButtonGroup>
-                        <Button onClick={this.edit(item)}>编辑</Button>
-                        <DeleteConfirm onClick={() => this.delete(item.id)}>
-                            <Button type="danger">删除</Button>
-                        </DeleteConfirm>
-                    </ButtonGroup>
+                    <span style={{ whiteSpace: 'nowrap' }}>
+                        <ButtonGroup>
+                            <Button onClick={this.edit(item)}>编辑</Button>
+                            {/* 系统级资产不可删除（后端同步拒绝）：禁用态保留布局并说明原因 */}
+                            {item.system ? (
+                                <Tooltip content="系统级资产不可删除，仅可修改">
+                                    <span>
+                                        <Button type="danger" disabled>删除</Button>
+                                    </span>
+                                </Tooltip>
+                            ) : (
+                                <DeleteConfirm onClick={() => this.delete(item.id)}>
+                                    <Button type="danger">删除</Button>
+                                </DeleteConfirm>
+                            )}
+                        </ButtonGroup>
+                    </span>
                 ),
             },
         ];

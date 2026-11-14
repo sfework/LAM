@@ -5,7 +5,7 @@ import { TablePage, ContentPage, ToastUI } from '../Common/Component';
 import Net from '../Common/Net';
 
 /**
- * 设置页（/api/settings，DESIGN §2.10）：按注册表元数据自动渲染控件——
+ * 设置页（/api/settings）：按注册表元数据自动渲染控件——
  *   int/float → InputNumber；bool → Switch；string → Input；
  *   modelRef → 可搜索模型下拉（按分类取 /api/models，选项文案“名称/模型名”；
  *   绑定值支持 `id` 或 `id:模型名` 覆盖格式，后端解析）。
@@ -13,7 +13,7 @@ import Net from '../Common/Net';
  */
 
 /**
- * 设置页（/api/settings，DESIGN §2.10）：按注册表元数据自动渲染控件——
+ * 设置页（/api/settings）：按注册表元数据自动渲染控件——
  *   int/float → InputNumber；bool → Switch；string → Input；modelRef → 模型下拉（按分类取 /api/models）。
  * 修改后点「保存」调 /api/settings/set（字符串值，服务端按类型校验），热更新即时生效。
  */

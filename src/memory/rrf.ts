@@ -1,5 +1,5 @@
 /**
- * RRF（Reciprocal Rank Fusion）——与参考项目 search-utils 同款算法。
+ * RRF（Reciprocal Rank Fusion）——标准排名融合算法。
  * score = Σ 1/(k + rank + 1)，k=60。
  */
 export const RRF_K = 60;

@@ -2,7 +2,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { useRef, useEffect, useReducer } from 'react';
 
 /**
- * MenuHelp：UI 无关的菜单模型（移植自参考项目）。
+ * MenuHelp：UI 无关的菜单模型。
  * - 输入菜单配置（itemKey 或 key 均可），自动归一化并过滤 hidden；
  * - 输出 semi-ui 约定字段（itemKey / items / text）与通用数据：navItems / openKeys /
  *   selectedKeys / breadcrumbs / routeConfigs；

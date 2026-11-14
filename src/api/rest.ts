@@ -1,21 +1,15 @@
 import { Hono, type Context } from "hono";
 
 /**
- * /api/* 统一调用约定（DESIGN 决策 45 + 47）。
+ * /api/* 统一调用约定（与前端 @sfework/common NetBase 对齐）。
  *
- * 对齐前端 `@sfework/common` 的 NetBase 约定（配套 C# 后端的
- * ServiceResult / PaginationModel），管理接口契约：
- *
- * 1. **一律 POST + JSON body**（决策 45）：路径 `/api/<资源>/<action>`（全小写连字符），
- *    参数全进 body。前端用 `Net.api.projects.list(...)`、`Net.api["denoise-rules"]["get-by-path"](...)`
- *    生成正好对应的小写路径（area='api'），无需后端做大小写归一。
- * 2. **响应包络**（决策 47，对齐 C# `ServiceResult`）：
+ * 1. **一律 POST + JSON body**：路径 `/api/<资源>/<action>`（全小写连字符），参数全进 body。
+ * 2. **响应包络**（对齐 ServiceResult）：
  *    成功 `{ success: true, code: 0, message: null, data }`；
  *    失败 `{ success: false, code: <HTTP 状态>, message, data: null }`。
- *    前端 NetBase 只读 success/code/message/data，code 同时承载 HTTP 状态。
- * 3. **列表分页**（决策 47）：`/list` 吃 `PaginationRequest`（`{ page, pageSize, ...筛选 }`）、
- *    返回 `PaginationModel`（`{ list, totalCount, page, pageSize, totalPage, hasNextPage, hasPreviousPage }`），
- *    与前端 `DataTable` / `GetPaginationModel` 直接对接（内存分页，个人本地数据量小）。
+ * 3. **列表分页**：`/list` 吃 `{ page, pageSize, ...筛选 }`、返回
+ *    `{ list, totalCount, page, pageSize, totalPage, hasNextPage, hasPreviousPage }`
+ *    （内存分页，个人本地数据量小）。
  *
  * 动作词表：list / get / create / update / delete + 资源专属动作（toggle/restore/rebuild/set…）。
  */
@@ -27,6 +21,7 @@ export class ApiError extends Error {
 
   constructor(status: number, code: string, message: string) {
     super(message);
+    this.name = "ApiError";
     this.status = status;
     this.code = code;
   }
@@ -66,12 +61,12 @@ export function optNum(b: Record<string, unknown>, key: string): number | undefi
 /** 处理器：从 body 取参、返回 data；未找到时调用 notFound() 抛错。返回 undefined/null 视为正常空结果。 */
 export type Handler = (body: Record<string, unknown>) => unknown | Promise<unknown>;
 
-/** 成功包络（对齐 C# ServiceResult：code=0 即成功，message 为空）。 */
+/** 成功包络（code=0 即成功，message 为空）。 */
 export function okBody(data: unknown): { success: true; code: 0; message: null; data: unknown } {
   return { success: true, code: 0, message: null, data: data ?? null };
 }
 
-/** 失败包络：code 复用 HTTP 状态，便于前端 callBack 按状态分流。 */
+/** 失败包络：code 复用 HTTP 状态，便于前端按状态分流。 */
 export function errBody(code: number, message: string): { success: false; code: number; message: string; data: null } {
   return { success: false, code, message, data: null };
 }
@@ -96,9 +91,9 @@ export function postRoutes(routes: Record<string, Handler>): Hono {
   return app;
 }
 
-/* ───────────────────────────── 分页（决策 47） ───────────────────────────── */
+/* ───────────────────────────── 分页 ───────────────────────────── */
 
-/** 前端 DataTable 期望的分页模型（对齐 @sfework/common 的 GetPaginationModel）。 */
+/** 前端 DataTable 期望的分页模型。 */
 export interface PageModel<T> {
   list: T[];
   totalCount: number;
@@ -109,12 +104,12 @@ export interface PageModel<T> {
   hasNextPage: boolean;
 }
 
-/** 列表默认页大小（与参考项目 GetPaginationRequest 的 30 一致）。 */
+/** 列表默认页大小。 */
 export const DEFAULT_PAGE_SIZE = 30;
 
 /**
  * 内存分页：从 body 读 page/pageSize（缺省 1 / DEFAULT_PAGE_SIZE），对已排序行切片。
- * 个人本地数据量小，不下推 SQL 分页；筛选参数由各路由自行从 body 取用。
+ * 筛选参数由各路由自行从 body 取用。
  */
 export function paginate<T>(rows: readonly T[], body: Record<string, unknown>, defaultPageSize = DEFAULT_PAGE_SIZE): PageModel<T> {
   const page = Math.max(1, Math.trunc(optNum(body, "page") ?? 1));

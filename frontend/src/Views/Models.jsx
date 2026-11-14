@@ -22,7 +22,7 @@ function getTableColumns(view) {
         {
             title: '操作', dataIndex: 'operate', width: 168,
             render: (text, item) => {
-                // 决策 77：被引用模型**可编辑**（下一调用即生效）；仅禁删除（防悬挂引用）。
+                // 被引用模型**可编辑**（下一调用即生效）；仅禁删除（防悬挂引用）。
                 // 分类改动在编辑弹窗内禁用（后端也 400 兜底）。
                 const used = !!item.inUse;
                 return <ButtonGroup>
@@ -144,7 +144,7 @@ class EditModal extends UIFormModal {
         }
     };
     children() {
-        // 编辑时分类恒禁用（决策 77 收紧）：改类等于换提供商，应走"新建 + 重绑"；后端同步 400 兜底。
+        // 编辑时分类恒禁用（收紧）：改类等于换提供商，应走"新建 + 重绑"；后端同步 400 兜底。
         const lockCategory = !!this.data.id;
         // 外层 UIFormModal 的 <Form initValues={this.data}> 已带 models 清单字段进表单。
         return <>

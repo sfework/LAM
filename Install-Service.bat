@@ -1,6 +1,7 @@
 @echo off
 REM =====================================================================
-REM Register LAM (Local Agent Memory Gateway) as a Windows service (NSSM).
+REM Register NLAM (Local Agent Memory Gateway, LAM rewrite) as a Windows
+REM service (NSSM).
 REM NOTE: keep this file ASCII-only; cmd parses .bat with the OEM codepage
 REM       and non-ASCII content breaks (mis-parsed lines, mojibake).
 REM
@@ -12,7 +13,6 @@ REM What it does:
 REM   - Re-launches itself elevated (UAC prompt) if not admin
 REM   - Downloads NSSM v2.24 from nssm.cc into tools\ if missing
 REM   - Service command: node.exe --import tsx --liftoff-only src/server.ts
-REM     (--liftoff-only kept for tsx stability; former CodeGraph requirement, DESIGN 67, is gone)
 REM   - AppDirectory = repo root (so data\ and frontend\dist land here)
 REM   - Process stdout/stderr go to data\Logs\service\ (same log root as the app logs)
 REM   - Idempotent: existing service is removed and re-created
@@ -22,7 +22,7 @@ cd /d "%~dp0"
 
 set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
-set "SERVICE_NAME=LocalAgentMemory"
+set "SERVICE_NAME=NLAM"
 set "NSSM=%ROOT%\tools\nssm.exe"
 
 REM -- 1. admin check: relaunch elevated when needed --
@@ -60,6 +60,12 @@ if not exist "%ROOT%\node_modules\tsx" (
   pause & exit /b 1
 )
 
+REM -- 4.5 frontend build precheck (SPA served from frontend\dist) --
+if not exist "%ROOT%\frontend\dist\index.html" (
+  echo [WARN] frontend\dist missing. Run "pnpm build:web" to enable the admin UI.
+  echo        Service will still install in backend-only mode.
+)
+
 REM -- 5. fetch NSSM if missing (official zip from nssm.cc, take win64\nssm.exe) --
 if not exist "%NSSM%" (
   echo [INFO] Downloading NSSM v2.24 from nssm.cc ...
@@ -93,8 +99,8 @@ if errorlevel 1 (
 if not exist "%ROOT%\data\Logs\service" mkdir "%ROOT%\data\Logs\service"
 
 "%NSSM%" set %SERVICE_NAME% AppDirectory "%ROOT%"
-"%NSSM%" set %SERVICE_NAME% DisplayName "Local Agent Memory Gateway"
-"%NSSM%" set %SERVICE_NAME% Description "Local Agent Memory Gateway: transparent OpenAI proxy + memory/knowledge backend on :8790"
+"%NSSM%" set %SERVICE_NAME% DisplayName "NLAM - Local Agent Memory Gateway"
+"%NSSM%" set %SERVICE_NAME% Description "NLAM: transparent OpenAI proxy + conversation/memory/profile backend with MCP tools on :8790"
 "%NSSM%" set %SERVICE_NAME% Start AUTO
 REM restart 5s after unexpected exit
 "%NSSM%" set %SERVICE_NAME% AppExit Default Restart
@@ -107,7 +113,7 @@ REM redirect stdout/stderr into data\Logs\service\, rotate at 10MB
 "%NSSM%" set %SERVICE_NAME% AppRotateFiles 1
 "%NSSM%" set %SERVICE_NAME% AppRotateBytes 10485760
 REM to override PORT / DATA_DIR / FRONTEND_DIST, uncomment:
-REM "%NSSM%" set %SERVICE_NAME% AppEnvironmentExtra PORT=8790 DATA_DIR=E:\Code\LAM\data FRONTEND_DIST=E:\Code\LAM\frontend\dist
+REM "%NSSM%" set %SERVICE_NAME% AppEnvironmentExtra PORT=8790 DATA_DIR=%ROOT%\data FRONTEND_DIST=%ROOT%\frontend\dist
 
 echo [INFO] Starting service...
 "%NSSM%" start %SERVICE_NAME%

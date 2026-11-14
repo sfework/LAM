@@ -1,5 +1,5 @@
 import type { SettingsService } from "../settings/service.js";
-import type { L1Store } from "./l1-store.js";
+import type { MemoryRepo } from "./memory-repo.js";
 import { embedBatch as embedBatch0, type EmbeddingConfig } from "./embedding.js";
 import { createLogger } from "../infra/logger.js";
 
@@ -8,39 +8,39 @@ const log = createLogger("memory:embed");
 export type EmbedBatchFn = (cfg: EmbeddingConfig, texts: string[]) => Promise<Float32Array[]>;
 
 /**
- * 补嵌入：把活跃但尚无向量的 L1 批量向量化写入 mem_l1_vec。
+ * 补嵌入：把活跃但尚无向量的记忆批量向量化写入 memory_items_vec。
  * 仅在 vec 可用且 embedding_model 已配置时工作；否则 no-op。
  * 由调度器 tick 周期调用（增量、幂等：已有向量的会被 LEFT JOIN 过滤跳过）。
  */
 export class EmbeddingBackfiller {
-  private readonly store: L1Store;
+  private readonly memories: MemoryRepo;
   private readonly settings: SettingsService;
   private readonly embedBatch: EmbedBatchFn;
 
-  constructor(store: L1Store, settings: SettingsService, embedBatch: EmbedBatchFn = embedBatch0) {
-    this.store = store;
+  constructor(memories: MemoryRepo, settings: SettingsService, embedBatch: EmbedBatchFn = embedBatch0) {
+    this.memories = memories;
     this.settings = settings;
     this.embedBatch = embedBatch;
   }
 
   private config(): EmbeddingConfig | null {
-    if (!this.store.vecEnabled) return null;
+    if (!this.memories.vecEnabled) return null;
     return this.settings.getResolvedLlmConfig("embedding_model");
   }
 
-  /** 处理一批缺失嵌入的 L1。返回处理条数。
+  /** 处理一批缺失嵌入的记忆。返回处理条数。
    *  batch 上限 20：阿里云 DashScope 等 embedding 上游单请求 input 不超过 20 条，
-   *  超则确定性 400（batch size is invalid）导致该项目每 tick 重试刷屏（决策 85）。 */
+   *  超则确定性 400（batch size is invalid）导致该项目每 tick 重试刷屏。 */
   async backfillProject(projectId: string, batch = 20): Promise<number> {
     const cfg = this.config();
     if (!cfg) return 0;
-    const missing = this.store.listActiveMissingEmbedding(projectId, batch);
+    const missing = this.memories.listActiveMissingEmbedding(projectId, batch);
     if (!missing.length) return 0;
     try {
       const vecs = await this.embedBatch(cfg, missing.map((m) => m.content));
       for (let i = 0; i < missing.length; i++) {
         const v = vecs[i];
-        if (v) this.store.upsertVector(missing[i]!.id, projectId, v);
+        if (v) this.memories.upsertVector(missing[i]!.id, projectId, v);
       }
       return missing.length;
     } catch (err) {

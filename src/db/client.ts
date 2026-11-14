@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { dbFilePath } from "../infra/paths.js";
 import { createLogger } from "../infra/logger.js";
 import { runMigrations } from "./migrate.js";
-import { ensureFtsTables } from "./fts.js";
+import { ensureFtsTable } from "./fts.js";
 import { ensureVecTable } from "./vec.js";
 
 const log = createLogger("db");
@@ -60,7 +60,7 @@ export function openDb(): DbHandle {
   const vecAvailable = tryLoadVec(raw);
 
   runMigrations(raw);
-  if (fts5Available) ensureFtsTables(raw);
+  if (fts5Available) ensureFtsTable(raw);
   if (vecAvailable) ensureVecTable(raw);
 
   return {

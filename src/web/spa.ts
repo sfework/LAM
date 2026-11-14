@@ -4,12 +4,12 @@ import { Hono, type Context } from "hono";
 import { frontendDistDir } from "../infra/paths.js";
 
 /**
- * 前端 SPA 托管（DESIGN 决策 46）。
+ * 前端 SPA 托管。
  *
  * 目标：前端 build 产物与后端 API 同域同端口（http://localhost:8790），彻底避免跨域。
  * 对齐 ASP.NET Core 的 UseSpaStaticFiles + MapSpaFallback 语义：
  *   1) 真实静态文件（js/css/图片…）按路径命中直接返回；
- *   2) 未命中的 GET 导航请求（React Router 的 /projects、/memories 等客户端路由，含刷新/直链）
+ *   2) 未命中的 GET 导航请求（React Router 的客户端路由，含刷新/直链）
  *      回退到 index.html，交给前端路由接管；
  *   3) 后端自有前缀（/api /internal /mcp /v1 /health）绝不回退成 HTML ——
  *      否则接口 404 会变成 200 + HTML，前端 fetch 极难排查。
@@ -76,9 +76,9 @@ export function createSpaRouter(distDir: string = frontendDistDir()): Hono {
     spa.get("/", (c) =>
       c.text(
         [
-          "local-agent-memory-gateway 已启动（未托管前端）。",
+          "NLAM 已启动（未托管前端）。",
           `前端产物目录：${distDir}`,
-          "构建前端：pnpm --filter frontend build；或开发模式运行 Vite 并代理 /api /internal /mcp /health。",
+          "构建前端：pnpm build:web；或开发模式运行 Vite 并代理 /api /internal /mcp /health。",
           "接口：GET /health · POST /api/<资源>/<action> · POST /v1/chat/completions · /mcp",
         ].join("\n"),
         200,

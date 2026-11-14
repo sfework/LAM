@@ -1,7 +1,8 @@
-/** 协议适配器（DESIGN §2.1、决策 35）。
+/**
+ * 协议适配器。
  *
- * 本期只实现 ChatCompletionsAdapter；Responses API 留作扩展位（新增实现即可，
- * 除噪/注入/召回/回流等管线只认中间表示 ParsedChatRequest，不感知协议细节）。
+ * 仅实现 ChatCompletionsAdapter；除噪/注入/召回/回流等管线只认中间表示
+ * ParsedChatRequest，不感知协议细节。
  */
 
 import { isTextBlock } from "../utils/content.js";
@@ -17,7 +18,7 @@ export interface ParsedChatRequest {
   messages: ChatMessage[];
   model: string;
   stream: boolean;
-  /** 除 model/messages/stream 外的其余字段，转发时原样透传（DESIGN 决策 17）。 */
+  /** 除 model/messages/stream 外的其余字段，转发时原样透传。 */
   extra: Record<string, unknown>;
 }
 
@@ -33,9 +34,7 @@ export function messageText(content: unknown): string {
   if (Array.isArray(content)) {
     const parts: string[] = [];
     for (const block of content) {
-      if (isTextBlock(block)) {
-        parts.push(block.text);
-      }
+      if (isTextBlock(block)) parts.push(block.text);
     }
     return parts.join("\n");
   }
@@ -52,8 +51,7 @@ export function firstUserText(messages: readonly ChatMessage[]): string {
 
 /**
  * 指令角色归一：OpenAI 新协议用 "developer" 作为 "system" 的别名
- * （pi 等 reasoning 模型客户端会发 role:"developer"）。归一后除噪/注入/
- * 路径解析/L0 回流全管线按 system 处理，转发上游也是标准 system。
+ * （pi 等 reasoning 模型客户端会发 role:"developer"）。归一后全管线按 system 处理。
  */
 function normalizeInstructionRole(m: ChatMessage): ChatMessage {
   return m.role === "developer" ? { ...m, role: "system" } : m;

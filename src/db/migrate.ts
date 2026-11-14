@@ -7,59 +7,48 @@ import { createLogger } from "../infra/logger.js";
 const log = createLogger("db:migrate");
 
 /**
- * 运行时迁移应用器。
+ * 运行时迁移应用器（无 drizzle，手写 SQL 为唯一事实源）。
  *
- * drizzle-kit 离线生成 `drizzle/*.sql`（含 meta/_journal.json 顺序），
- * 本模块用 node:sqlite 按序执行未应用的迁移，并在 __migrations 记录版本。
- * 迁移文件内的 `--> statement-breakpoint` 为语句分隔符。
+ * 迁移文件放在仓库根 `migrations/`，命名 `NNNN_name.sql`，按文件名升序应用；
+ * 文件内 `--> statement-breakpoint` 为语句分隔符；已应用版本记录在 __migrations。
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-/** 打包后 dist/ 与源码 src/ 都回退到项目根的 drizzle 目录。 */
+
+/** 源码（src/db）与打包后（dist）都回溯到项目根的 migrations 目录。 */
 function migrationsDir(): string {
-  let dir = path.resolve(here, "../../drizzle");
-  if (!existsSync(dir)) dir = path.resolve(here, "../../../drizzle");
-  return dir;
+  for (const up of ["../..", "../../.."]) {
+    const dir = path.resolve(here, up, "migrations");
+    if (existsSync(dir)) return dir;
+  }
+  return path.resolve(here, "../..", "migrations");
 }
 
-interface JournalEntry {
-  idx: number;
-  version: string;
-  when: number;
-  tag: string;
-  breakpoints: boolean;
-}
-
-function loadJournal(dir: string): JournalEntry[] {
-  const file = path.join(dir, "meta", "_journal.json");
-  const json = JSON.parse(readFileSync(file, "utf8")) as { entries: JournalEntry[] };
-  return json.entries.sort((a, b) => a.idx - b.idx);
+function listMigrationFiles(dir: string): { name: string; file: string }[] {
+  return readdirSync(dir)
+    .filter((f) => /^\d{4}_.+\.sql$/.test(f))
+    .sort()
+    .map((f) => ({ name: f.replace(/\.sql$/, ""), file: path.join(dir, f) }));
 }
 
 export function runMigrations(raw: DatabaseSync): void {
   raw.exec(
-    "CREATE TABLE IF NOT EXISTS __migrations (idx INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS __migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
   );
   const applied = new Set(
-    (raw.prepare("SELECT idx FROM __migrations").all() as { idx: number }[]).map((r) => r.idx),
+    (raw.prepare("SELECT name FROM __migrations").all() as { name: string }[]).map((r) => r.name),
   );
 
   const dir = migrationsDir();
   if (!existsSync(dir)) {
-    log.warn({ dir }, "未找到迁移目录，跳过（首次 drizzle-kit generate 前）");
+    log.warn({ dir }, "未找到迁移目录，跳过");
     return;
   }
 
-  const journal = loadJournal(dir);
-  const ins = raw.prepare("INSERT INTO __migrations (idx, name, applied_at) VALUES (?, ?, ?)");
-
-  for (const entry of journal) {
-    if (applied.has(entry.idx)) continue;
-    const sqlFile = path.join(dir, `${entry.tag}.sql`);
-    if (!existsSync(sqlFile)) {
-      throw new Error(`迁移文件缺失: ${sqlFile} (idx=${entry.idx})`);
-    }
-    const sql = readFileSync(sqlFile, "utf8");
+  const ins = raw.prepare("INSERT INTO __migrations (name, applied_at) VALUES (?, ?)");
+  for (const { name, file } of listMigrationFiles(dir)) {
+    if (applied.has(name)) continue;
+    const sql = readFileSync(file, "utf8");
     const statements = sql
       .split(/--> statement-breakpoint/)
       .map((s) => s.trim())
@@ -68,11 +57,12 @@ export function runMigrations(raw: DatabaseSync): void {
     raw.exec("BEGIN");
     try {
       for (const stmt of statements) raw.exec(stmt);
-      ins.run(entry.idx, entry.tag, Date.now());
+      ins.run(name, Date.now());
       raw.exec("COMMIT");
+      log.info({ migration: name }, "迁移已应用");
     } catch (err) {
       raw.exec("ROLLBACK");
-      throw new Error(`迁移 ${entry.tag} 失败: ${String(err)}`);
+      throw new Error(`迁移 ${name} 失败: ${String(err)}`);
     }
   }
 }

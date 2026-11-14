@@ -5,7 +5,7 @@ import { TablePage, SearchBox, DataTable, UIFormModal, ToastUI, DeleteConfirm } 
 import Net from '../Common/Net';
 
 /**
- * 提示词页（/api/prompts，DESIGN §2.4）：
+ * 提示词页（/api/prompts）：
  * 多条提示词，但「生效互斥」——同一时刻最多 1 条 enabled（启用一条会自动停用其余），
  * 生效者作为系统提示注入网关。列表按名称正序。
  * 操作列：启用开关（行内切换，走 /update{enabled}，触发互斥）、编辑、删除；

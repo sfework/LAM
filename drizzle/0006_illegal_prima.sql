@@ -1,1 +1,0 @@
-ALTER TABLE `cg_calls` ADD `is_super` integer DEFAULT false NOT NULL;

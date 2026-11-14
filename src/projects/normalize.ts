@@ -1,5 +1,5 @@
 /**
- * 项目路径规范化（DESIGN §2.2）。
+ * 项目路径规范化。
  *
  * 规则：
  *  - 全转小写（Windows 大小写不敏感）；
@@ -22,10 +22,7 @@ export function normalizeProjectPath(input: string | undefined | null): string {
   // 处理 UNC：\\server\share → //server/share（开头双斜杠有意义，需保留）
   const isUnc = input.trimStart().startsWith("\\\\");
 
-  // 转小写
   p = p.toLowerCase();
-
-  // 去结尾斜杠，但至少保留一个字符（UNC 根 / 盘符根在内部单独保护）
   p = stripTrailingSlashes(p, isUnc);
 
   return p;
@@ -34,17 +31,13 @@ export function normalizeProjectPath(input: string | undefined | null): string {
 function stripTrailingSlashes(p: string, isUnc: boolean): string {
   // 盘符根：如 "e:/" → 保留 "e:/"
   if (/^[a-z]:\/$/.test(p)) return p;
-  // 普通路径去尾斜杠
   let out = p.replace(/\/+$/, "");
   if (isUnc) {
-    // UNC 根 "//" 规范化为 "//"（保留宿主定位）
     if (out === "" || out === "/") return "//";
-    // 折叠后前导可能只剩一个 /，统一补成 //
     if (out.startsWith("//")) return out;
     if (out.startsWith("/")) out = "/" + out;
     return out;
   }
-  // 非 UNC：极端情况（输入仅斜杠）归一为 "/"
   if (out === "") return "/";
   return out;
 }
@@ -61,7 +54,6 @@ export function deriveProjectName(normalizedPath: string): string {
     // 盘符根末段形如 "e:"，去掉冒号作为项目名
     return last.replace(/:$/, "");
   }
-  // 形如 "e:/" → "e"
   const drive = normalizedPath.match(/^([a-z]):\/?$/);
   if (drive) return drive[1] as string;
   return "root";

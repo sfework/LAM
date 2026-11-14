@@ -7,7 +7,7 @@ import { createLogger } from "../infra/logger.js";
 const log = createLogger("api:logs");
 
 /**
- * /api/logs —— 运行日志查看（DESIGN §5 日志方案、决策 53）。
+ * /api/logs —— 运行日志查看。
  * 日志按 {DATA_DIR}/Logs/{yyyy}/{MM}/{dd}/{HH}.txt 每小时一个文件（HourlyRotatingWriter）。
  * POST /list    {date:"yyyy-MM-dd"} → 该日期下的小时日志文件（按小时升序，含大小/修改时间）。
  * POST /get     {date,name} → 读取日志文件文本内容（只读查看）。

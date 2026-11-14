@@ -1,6 +1,6 @@
 /**
- * 向量化服务（DESIGN §2.7）：OpenAI-compatible /embeddings，维度固定 1024。
- * 未配置 embedding_model 时 hasEmbedding=false，召回降级为纯 BM25。
+ * 向量化服务：OpenAI-compatible /embeddings，维度固定 1024。
+ * 未配置 embedding_model 时召回降级为纯 BM25。
  */
 
 export const EMBEDDING_DIM = 1024;

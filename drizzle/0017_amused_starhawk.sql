@@ -1,1 +1,0 @@
-ALTER TABLE `models` ADD `model_mode` text DEFAULT 'auto' NOT NULL;

@@ -1,34 +1,25 @@
 /**
- * 消息除噪引擎（DESIGN §2.3）。纯函数，无 IO，便于单测与网关复用。
+ * 消息除噪引擎。纯函数，无 IO，便于单测与网关复用。
  *
  * 规则语义：
  *  - 删除模式（默认）：删除「开头文本」到「结束文本」之间的内容，**含两端标记本身**；
  *  - 提取模式（extract）：保留中间内容，仅剥掉两端标记（如只去 <context>…</context> 壳子）；
  *  - 字面量转义后拼 `start[\s\S]*?end` 非贪婪正则——开头与结尾必须同时出现才算命中，
  *    只有开头没找到结尾 → 不处理；多处命中 → 全处理；
- *  - start == end 时退化为处理该字面量的所有出现（提取模式下无中间内容可留，等同删除）；
+ *  - start == end 时退化为处理该字面量的所有出现；
  *  - 多条规则按 createdAt 升序依次叠加应用；
  *  - 作用范围：仅 user / assistant 的文本内容（tool 消息、tool_calls 不处理）；
- *  - 双通道：forward（转发生效）与 memory（记忆生效）各自独立筛选规则。 *
+ *  - 双通道：forward（转发生效）与 memory（记忆生效）各自独立筛选规则。
+ *
  * 后处理（与是否命中规则无关，零规则时也执行）：
  *  - user / assistant 的文本内容统一 trim（去首尾空白，含空格与空行）；
  *  - trim 后文本为空的 user / assistant 消息整条删除；
  *  - 例外：带 tool_calls 的 assistant 消息不删（其 content 常为空，删除会破坏
- *    与后续 tool 消息的配对，上游报 400）。 */
+ *    与后续 tool 消息的配对，上游报 400）。
+ */
 
 import { isTextBlock } from "../utils/content.js";
-
-export interface DenoiseRuleData {
-  id: string;
-  startText: string;
-  endText: string;
-  /** true = 提取：保留命中区间内容，只删除两端标记；false = 整段删除（含标记）。 */
-  extract: boolean;
-  applyForward: boolean;
-  applyMemory: boolean;
-  enabled: boolean;
-  createdAt: number;
-}
+import type { DenoiseRuleData } from "./repo.js";
 
 export type DenoiseChannel = "forward" | "memory";
 
@@ -46,7 +37,7 @@ function escapeRegExp(s: string): string {
 /**
  * startText+endText → 编译后 RegExp 缓存（性能优化：客户端每轮全量重发历史，
  * 规则不变时逐条消息重编译纯属浪费）。/g 的 replace 每次调用后自动复位 lastIndex，
- * 同一实例跨文本复用安全；键数量以规则数为上界（个位数~十位数），不设淘汰。
+ * 同一实例跨文本复用安全；键数量以规则数为上界，不设淘汰。
  */
 const patternCache = new Map<string, RegExp>();
 

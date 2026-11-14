@@ -1,5 +1,5 @@
 /**
- * OpenAI content 块的共用判定（此前散落于 gateway/protocol 与 denoise/engine）。
+ * OpenAI content 块的共用判定。
  * content 既可能是 string，也可能是 [{type:"text",text:"..."} | {type:"image_url",...}] 块数组。
  */
 

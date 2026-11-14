@@ -1,1 +1,0 @@
-ALTER TABLE `skills` DROP COLUMN `resources`;

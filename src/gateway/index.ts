@@ -4,14 +4,14 @@ import type { ProjectRepo } from "../projects/repo.js";
 import { normalizeProjectPath } from "../projects/normalize.js";
 import { parseWorkspacePath } from "../projects/parse-workspace.js";
 import type { DenoiseRepo } from "../denoise/repo.js";
-import { denoiseMessages } from "../denoise/engine.js";
+import { denoiseMessages, denoiseMessage, selectRules } from "../denoise/engine.js";
 import type { SettingsService } from "../settings/service.js";
 import { SessionRepo, deriveSessionKey } from "./sessions.js";
 import { SnapshotBuilder, injectSnapshot } from "./snapshot.js";
-import { chatCompletionsAdapter, firstUserText, type ChatMessage } from "./protocol.js";
-import { forwardChat } from "./forwarder.js";
-import type { L0Recorder } from "../memory/l0-recorder.js";
-import type { L2Refiner } from "../memory/l2-refiner.js";
+import { chatCompletionsAdapter, firstUserText, messageText, type ChatMessage } from "./protocol.js";
+import { forwardChat, type FetchFn } from "./forwarder.js";
+import type { ConversationRecorder } from "../memory/conversation-recorder.js";
+import type { ProfileRepo } from "../memory/profile-repo.js";
 import type { MemoryRecaller } from "../memory/recall.js";
 import { prependRecall } from "../memory/recall.js";
 import { createLogger } from "../infra/logger.js";
@@ -24,12 +24,14 @@ export interface GatewayDeps {
   settings: SettingsService;
   sessions: SessionRepo;
   snapshot: SnapshotBuilder;
-  l0: L0Recorder;
-  l2: L2Refiner;
+  recorder: ConversationRecorder;
+  profiles: ProfileRepo;
   recaller: MemoryRecaller;
+  /** 注入上游 fetch（测试替换用）；缺省走真实 undici fetch。 */
+  fetchFn?: FetchFn;
 }
 
-/** 统一 OpenAI 错误格式（DESIGN 决策 22：友好提示，不抛裸异常）。 */
+/** 统一 OpenAI 错误格式（友好提示，不抛裸异常）。 */
 function openaiError(c: Context, status: number, code: string, message: string) {
   return c.json({ error: { code, message, type: "server_error" } }, status as 400);
 }
@@ -43,9 +45,9 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
       return openaiError(c, 400, "invalid_request", "请求体需含 messages 数组");
     }
 
-    // 1. 项目登记（header 优先，正文兜底）。解析不到不再拒绝请求：
-    // Copilot /compact 等元请求的 system 无工作区信息，400 会导致客户端报
-    // "Summarization request failed"。此时降级为透传代理（见 3.5）。
+    // 1. 项目登记（header 优先，正文兜底）。解析不到不拒绝请求：
+    // Copilot /compact 等元请求的 system 无工作区信息，400 会导致客户端报错。
+    // 此时降级为透传代理（见 3.5）。
     const project = resolveProject(deps, c, body);
 
     // 2. 解析协议
@@ -54,7 +56,7 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
     // 3. 除噪（转发通道）
     const denoised = denoiseMessages(parsed.messages, deps.denoise.list(), "forward") as ChatMessage[];
 
-    // 3.5 降级通道：无项目归属（路径解析失败/登记失败）→ 跳过快照、召回、L0 回流，仅除噪后透传
+    // 3.5 降级通道：无项目归属 → 跳过快照、召回、对话回流，仅除噪后透传
     let finalMessages: ChatMessage[] = denoised;
     let sessionKey = "";
     if (!project.projectId) {
@@ -64,30 +66,29 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
       const { snapshot, sessionKey: sid } = resolveSnapshot(deps, project.projectId, project.path, denoised, c.req.header("x-session-id"));
       sessionKey = sid;
 
-      // 5. 注入快照到 system（方案 A）
+      // 5. 注入快照到 system
       const withSnapshot = injectSnapshot(denoised, snapshot);
 
-      // 5.5 每轮 L1 动态召回 → 拼到最后一条 user 之前（超时/失败降级空召回，不阻塞）
-      // 检索词 = 最近 N 条 user 消息（N 热更可调，assistant 不参与防复述污染），提升短追问的召回准确率。
+      // 5.5 每轮记忆动态召回 → 拼在最后一条 user 之前（轻量本地检索，不阻塞）
       const userMsgs = denoised.filter((m) => m.role === "user");
-      const recallTurns = deps.settings.getInt("l1_recall_query_turns");
-      const recentUsers = userMsgs.slice(-Math.max(1, recallTurns));
       const lastUser = userMsgs[userMsgs.length - 1];
       finalMessages = withSnapshot;
-      if (lastUser && recentUsers.length) {
-        const { block, items } = await deps.recaller.recall(project.projectId, recentUsers.map((m) => m.content));
+      if (lastUser) {
+        // 查询词按 memory 通道二次除噪：转发保留的包装块（如 <system_reminder> 的
+        // workspace_info）不应污染 BM25 检索（见迁移 0004 规则通道配置）。
+        const queryText = messageText(denoiseMessage(lastUser, selectRules(deps.denoise.list(), "memory")).content);
+        const { block, items } = await deps.recaller.recall(project.projectId, queryText);
         if (block) finalMessages = prependRecall(withSnapshot, block);
         if (items.length) {
-          // 规范日志三类之一：记录触发召回的用户发言与注入的记忆全文。
           log.info(
             {
               projectId: project.projectId,
               path: project.path,
-              userMessage: String(lastUser.content),
+              userMessage: queryText.slice(0, 500),
               count: items.length,
-              recalled: items.map((i) => ({ id: i.id, kind: i.kind, score: i.score, source: i.source, content: i.content })),
+              recalled: items.map((i) => ({ id: i.id, kind: i.kind, content: i.content })),
             },
-            "L1 召回注入",
+            "记忆召回注入",
           );
         }
       }
@@ -108,21 +109,22 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
     try {
       result = await forwardChat({ baseUrl: llm.baseUrl, apiKey: llm.apiKey }, forwardBody, {
         signal: c.req.raw.signal,
+        timeoutMs: deps.settings.getInt("gateway_forward_timeout_minutes") * 60_000,
+        idleWarnMs: deps.settings.getInt("gateway_stream_idle_warn_seconds") * 1000,
+        fetchFn: deps.fetchFn,
       });
     } catch (err) {
       log.error({ err: String(err), projectId: project.projectId }, "上游转发失败");
       return openaiError(c, 502, "upstream_error", "上游 LLM 不可达，请检查 gateway_llm 配置与网络");
     }
 
-    // 9. 旁路聚合 → final answer 时 L0 回流（fire-and-forget，不阻塞响应）
+    // 9. 旁路聚合 → final answer 时对话回流（fire-and-forget，不阻塞响应）
     result.aggregate
       .then((agg) => {
-        // final answer → L0 回流（始终写 L0 + 累积调度器状态；
-        // 调度器按轮数阈值决定何时真正提取，提取常驻开启）
-        // 降级通道（无项目归属）不回流的 L0：无法按项目隔离，且多为 compact 等元请求
+        // 降级通道（无项目归属）不回流：无法按项目隔离，且多为 compact 等元请求
         if (agg.final && project.projectId) {
           // 用原始请求消息（未除噪）：recorder 内部按 memory 通道除噪 + 游标对齐
-          deps.l0.recordTurn({
+          deps.recorder.recordTurn({
             projectId: project.projectId,
             sessionKey,
             requestMessages: parsed.messages,
@@ -139,7 +141,7 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
     });
   });
 
-  // 不开放其他 OpenAI 端点（DESIGN 决策 22）
+  // 不开放其他 OpenAI 端点
   gw.all("/v1/*", (c) =>
     openaiError(c, 404, "endpoint_not_supported", "本网关仅支持 /v1/chat/completions"),
   );
@@ -148,8 +150,7 @@ export function createGatewayRouter(deps: GatewayDeps): Hono {
 }
 
 /**
- * 项目识别（header 优先，正文兜底）。失败返回 projectId:null，由调用方降级为透传代理，
- * 不再中断请求（compact 等元请求无工作区信息，属预期场景）。
+ * 项目识别（header 优先，正文兜底）。失败返回 projectId:null，由调用方降级为透传代理。
  */
 function resolveProject(
   deps: GatewayDeps,
@@ -160,7 +161,7 @@ function resolveProject(
   if (!rawPath || !normalizeProjectPath(rawPath)) rawPath = parseWorkspacePath(body);
   if (!rawPath || !normalizeProjectPath(rawPath)) {
     // 诊断日志：记录消息角色、指令消息开头、正文中所有含盘符的行与首条 user 片段，
-    // 便于适配新客户端的提示词格式（一次复现即可定位路径实际所在位置/写法）。
+    // 便于适配新客户端的提示词格式。
     const msgs = Array.isArray(body.messages) ? (body.messages as ChatMessage[]) : [];
     const textOf = (content: unknown): string =>
       typeof content === "string" ? content : JSON.stringify(content ?? "").slice(0, 4000);
@@ -181,7 +182,7 @@ function resolveProject(
           .filter((m) => m.role === "system" || m.role === "developer")
           .map((m) => (typeof m.content === "string" ? m.content.slice(0, 400) : "[blocks]")),
         pathLines,
-        firstUser: textOf(msgs.find((m) => m.role === "user")?.content ?? "").slice(0, 300),
+        firstUser: textOf(msgs.find((m) => m.role === "user")?.content).slice(0, 400),
       },
       "项目路径解析失败：请求正文快照",
     );
@@ -218,7 +219,7 @@ function resolveSnapshot(
     return { snapshot: existing.injectSnapshot, sessionKey }; // 复用（字节级一致）
   }
 
-  const snap = deps.snapshot.build({ projectId, projectPath, memoryProfile: projectId ? deps.l2.read(projectId) : "" });
+  const snap = deps.snapshot.build({ projectId, projectPath, memoryProfile: projectId ? deps.profiles.read(projectId) : "" });
   if (existing) {
     deps.sessions.setSnapshot(sessionKey, snap);
     deps.sessions.touch(sessionKey, now);
@@ -230,7 +231,7 @@ function resolveSnapshot(
 }
 
 /**
- * 后台任务：提取调度器（阶段 6）。（CodeGraph 已移除，不再挂载其启动/停止钩子。）
+ * 后台任务：提取调度器。
  */
 export interface GatewayBackground {
   start(): Promise<void>;

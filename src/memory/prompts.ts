@@ -1,7 +1,6 @@
 /**
- * 记忆提取提示词（移植自参考项目 MemoryCore/src/core/prompts 的 chat 模式，
- * 按本项目改造：个人本地场景、kind 体系合并原 L1+L2 语义；
- * 归纳合并 / 情境命名 / metadata 时间字段与参考项目保持一致）。
+ * 记忆提取提示词。个人本地场景，kind 体系承载原子记忆语义；
+ * 归纳合并 / 情境命名 / metadata 时间字段。
  */
 
 import { localDateTimeStr } from "../infra/localtime.js";
@@ -13,11 +12,15 @@ export interface ExtractMessage {
   timestamp: number;
 }
 
-/** L1 条目类型（kind）。 */
-export const L1_KINDS = ["persona", "episodic", "instruction", "fact", "method", "artifact"] as const;
-export type L1Kind = (typeof L1_KINDS)[number];
+/** 记忆条目类型（kind）。 */
+export const MEMORY_KINDS = ["persona", "episodic", "instruction", "fact", "method", "artifact"] as const;
+export type MemoryKind = (typeof MEMORY_KINDS)[number];
 
-export const EXTRACT_SYSTEM_PROMPT = (maxChars: number) => `你是"情境切分与记忆提取专家"。分析对话，判断情境切换，并提取结构化核心记忆。
+export function isMemoryKind(v: unknown): v is MemoryKind {
+  return typeof v === "string" && (MEMORY_KINDS as readonly string[]).includes(v);
+}
+
+export const EXTRACT_SYSTEM_PROMPT = `你是"情境切分与记忆提取专家"。分析对话，判断情境切换，并提取结构化核心记忆。
 
 **输出语言**：scene_name 与 memory content 使用用户消息的主导语言；JSON 字段名、枚举值、时间戳保持英文。
 
@@ -33,17 +36,17 @@ export const EXTRACT_SYSTEM_PROMPT = (maxChars: number) => `你是"情境切分�
 2. 独立完整：跳出当前对话依然成立，无上下文也能看懂；主体用"用户"或项目名。
 3. 归纳合并：强关联或因果关系的多条消息，必须合并为一条完整记忆，不可碎片化。
 4. 时间：尽量基于消息 timestamp 推算绝对时间。
-5. 长度：单条 memory content 不超过 ${maxChars} 字符，超出必须拆分或精简。
+5. 一条一事：单条只讲一个主题，完整自洽即可，不设字符上限；不要把不相关的内容拼进同一条。
 
 【类型（type，六选一）】
 - persona：用户稳定属性/偏好/技能/习惯（"用户喜欢/习惯…"）。priority 80-100 核心，50-70 一般，<50 丢弃。
 - episodic：客观发生的事件/决定/计划（"用户于[时间]做了[事]"）。80-100 重要，<60 琐碎丢弃。
 - instruction：用户对 AI 的长期行为规则/格式偏好/语气控制（"用户要求 AI 以后…"）。-1 死命令，90-100 核心，<70 临时丢弃。
-- fact：项目事实/技术栈/架构决策/约束/状态（"项目使用 X 框架""模块 A 依赖 B"）。**只记具体、可定位的事实**；项目整体概述/环境信息（如"用户在开发 X 项目，路径 …，端口 …，技术栈是 …"）不单独成条——这类总览由 L2 项目画像承载并每会话全文注入，重复立条只会污染每轮召回。
+- fact：项目事实/技术栈/架构决策/约束/状态（"项目使用 X 框架""模块 A 依赖 B"）。**只记具体、可定位的事实**；项目整体概述/环境信息（如"用户在开发 X 项目，路径 …，端口 …，技术栈是 …"）不单独成条——这类总览由项目画像承载并每会话全文注入，重复立条只会污染每轮召回。
 - method：经验方法/SOP/禁忌/踩坑教训/判断标准（"排查 X 类问题应先查 Y""禁止直接改 Z"）。
 - artifact：文档/PR/Issue/链接/脚本等可复用资产（"部署流程记录在 docs/deploy.md"）。
 
-【不应提取】寒暄闲聊；一次性操作指令；重复内容；AI 自身行为输出；纯主观无客观信息的情绪表达；**项目整体概述/环境总览**（路径、端口、技术栈罗列等——归 L2 画像，不立独立条目）。
+【不应提取】寒暄闲聊；一次性操作指令；重复内容；AI 自身行为输出；纯主观无客观信息的情绪表达；**项目整体概述/环境总览**（路径、端口、技术栈罗列等——归项目画像，不立独立条目）。
 
 ## 任务三：输出格式（严格 JSON 数组，无其他内容、无 markdown 修饰符）
 [
@@ -69,18 +72,14 @@ metadata 字段说明：
 
 export function formatExtractionPrompt(params: {
   newMessages: ExtractMessage[];
-  backgroundMessages?: ExtractMessage[];
   previousSceneName?: string;
 }): string {
-  const { newMessages, backgroundMessages = [], previousSceneName = "无" } = params;
+  const { newMessages, previousSceneName = "无" } = params;
   const fmt = (m: ExtractMessage) =>
     `[${m.id}] [${m.role}] [${localDateTimeStr(new Date(m.timestamp))}]: ${m.content}`;
   return `**输出语言**：根据下方"待提取的新消息"中 user 发言的主导语言书写 scene_name 和 memory content。
 
 【上一个情境】：${previousSceneName}
-
-【背景对话】（仅供理解上下文，严禁从中提取记忆）：
-${backgroundMessages.length ? backgroundMessages.map(fmt).join("\n\n") : "无"}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -134,7 +133,7 @@ export interface ConflictCandidate {
 export interface ConflictNewMemory {
   recordId: string;
   content: string;
-  type: L1Kind;
+  type: MemoryKind;
   priority: number;
   sceneName: string;
 }
@@ -200,13 +199,19 @@ ${memoryParts.join("\n\n━━━━━━━━━━━━━━━━━━�
 请逐条判断并输出决策 JSON 数组。候选列表为空的新记忆直接输出 action=store。`;
 }
 
-// ── L2 项目画像凝练 ──
+// ── 项目画像凝练 ──
 
-export const PERSONA_SYSTEM_PROMPT = (maxChars: number) => `# 项目画像架构师 — 增量演化协议
+export const PERSONA_SYSTEM_PROMPT = `# 项目画像架构师 — 增量演化协议
 
 **输出语言**：画像正文自然语言内容与记忆条目同语言；Markdown 语法保留。
 
 结合已有的【当前画像】和【新增/变化的记忆】，深度分析后输出更新后的项目画像（纯 Markdown 文本，不要输出思考过程）。
+
+## 总纲：只记录最终形态
+画像是**最终形态快照**，不是变更日志。全篇只描述"现在是什么"，绝不描述"如何变成这样"：
+- **禁止记录变更过程与中间态**：不写"从 X 改为 Y""先设 100 后调 50""重构中/待优化"这类演化叙述，只保留最终生效的结论。
+- **过时内容一律就地删除**：凡与新增记忆冲突或已被移除的旧机制，直接删掉旧段落，只留唯一最新说法，不得新旧并存。
+- **严格遵守字数上限**：输出总长度不得超过【用户消息】中给定的字数上限（超限即视为不合格输出），优先保留稳定事实与规则，删减冗余示例与过程性描述。
 
 ## 核心逻辑
 寻找贯穿线，连接与综合，禁止罗列堆砌。四层扫描：
@@ -216,27 +221,32 @@ export const PERSONA_SYSTEM_PROMPT = (maxChars: number) => `# 项目画像架构
 4. 经验内核：可复用的方法、踩过的坑、重要决策及原因。
 
 ## ⛔ 严格禁止
-- **总长度不超过 ${maxChars} 字符**，及时总结、删除不重要信息。
 - **禁止过度推测**：没提到的信息不要臆想；冷启动阶段保持克制，可缺省章节。
 - **内容只能来自提供的记忆条目**，不得从路径/目录结构等元数据推断。
 - 不要输出 JSON、不要包裹代码块，只输出 Markdown 画像正文。
 
-## ⛔ 禁止写入易失真的过程信息（决策 87）
+## ⛔ 禁止写入易失真的过程信息
 画像是**稳定上下文**，每轮常驻注入；写成流水账会持续污染模型判断，且很快与代码脱节：
 
 1. **禁止记录版本号与计数**：如"画像版本 476""活跃记忆 68 条""配置项 39 个""工具 28 个"——
    这些数字每次都在变，写进去必然过期。需要计数时用"约"或改为描述能力本身。
 2. **禁止记录对话过程与本次改动**：如"用户询问了…""本轮触发版本 475→476 覆盖更新""用户强调…流程"
-   —— 过程属于 L0/episodic，不属于画像。只写提炼后的结论与规则。
+   —— 过程属于对话记录/episodic，不属于画像。只写提炼后的结论与规则。
 3. **禁止用"重构中/待改进/痛点"描述当前任务状态**：写完即过时。要写就写已经生效的方案。
 4. **禁止记录临时参数或试错路径**：如"默认先设 100，若不行改 50"。只写最终采用的取值与理由。
 
-## ⛔ 功能移除后必须删除对应段落（决策 87）
+## ⛔ 功能移除后必须删除对应段落
 增量更新时，若新增记忆表明某项功能/机制/文件**已被移除或替换**（例如"已移除 X""X 改为 Y""X 不再是唯一路径"），
 必须**删除或改写画像中描述旧机制的整段内容**，不得保留"旧机制 + 新机制"并存：
 - 常见残留："A 负责…"其实已删除、"仅支持 A"其实已支持 B、配置项清单里已不存在的 key、已废弃的工具名。
 - 判断依据：新记忆明确使用"已移除 / 已删除 / 已替换 / 改为 / 不再"等措辞，或描述与画像现有描述直接冲突。
 - 冲突无法判断谁更新时，**以新增记忆为准**（时间更近），并在改写处只保留一套说法。
+
+## ⛔ 持续压缩与精炼纪律（字数控制核心）
+画像在**固定字数预算**内持续演化，目标是"少而准"，不是"多而全"：
+- **精炼自检**：每条内容写入前先问——能否用更少的字表达？能否并入已有段落？能合并就合并，能压缩就压缩。
+- **合并优先于追加**：变化优先强化/修正/吸收既有条目，禁止把每次变化都追加成新条目；画像应随时间越凝练越短。
+- **超预算即重构**：若【用户消息】告知当前画像已超出预算，本次必须整体压缩回预算内：合并同类段落、删除低价值细节与冗余示例，只保留最稳定、最高信息密度的内容。
 
 ## 输出模板（信息不足可删减章节）
 # 项目画像
@@ -253,19 +263,76 @@ export function formatPersonaPrompt(params: {
   mode: "first" | "incremental";
   existingProfile?: string;
   changedMemories: { kind: string; content: string; createdAt: number }[];
-  /** 已被删除/替换的旧机制（决策 87）：供模型定位画像中需要清除的残留段落。 */
+  /** 已被删除/替换的旧机制：供模型定位画像中需要清除的残留段落。 */
   removedTopics?: string[];
+  /** 画像输出字数上限（来自 profile_max_chars）：注入为硬性约束，落库与注入侧不再截断。 */
+  maxChars?: number;
+  /** 当前画像字符数（增量模式传 existing.content.length；首次生成缺省）：用于量化预算反馈。 */
+  currentChars?: number;
 }): string {
   const memText = params.changedMemories
     .map((m) => `- [${m.kind}] ${m.content}`)
     .join("\n");
+  // 字数上限硬提示（量化反馈）：给出预算与当前用量，
+  // 按 超限 / 接近（>80%）/ 正常 三级分级警告；0/缺省上限视为不限。
+  const charLimit = buildCharLimitNote(params.maxChars, params.currentChars);
   if (params.mode === "first") {
-    return `【首次生成】以下是该项目的全部记忆，请凝练为项目画像：\n\n${memText}`;
+    return `【首次生成】以下是该项目的全部记忆，请凝练为项目画像：\n\n${memText}${charLimit}`;
   }
   const removed = params.removedTopics?.length
     ? `\n\n【本次涉及移除/替换的机制】（画像中若仍描述这些机制，必须删除或改写对应段落）：\n${params.removedTopics
         .map((t) => `- ${t}`)
         .join("\n")}`
     : "";
-  return `【增量更新】当前画像：\n\n${params.existingProfile ?? "（空）"}\n\n新增/变化的记忆：\n\n${memText}${removed}\n\n请基于当前画像做最小必要的更新。`;
+  return `【增量更新】当前画像：\n\n${params.existingProfile ?? "（空）"}\n\n新增/变化的记忆：\n\n${memText}${removed}${charLimit}\n\n请基于当前画像做最小必要的更新。`;
+}
+
+/**
+ * 字数预算提示（三级量化反馈）：未配置上限返回空串；
+ * 超限 → 强制整体压缩回预算；接近（>80%）→ 先合并再新增；正常/首凝 → 报预算与余量。
+ */
+function buildCharLimitNote(maxChars?: number, currentChars?: number): string {
+  if (!maxChars || maxChars <= 0) return "";
+  const cur = currentChars ?? 0;
+  if (cur > maxChars) {
+    return `\n\n【字数上限（硬性要求）】预算 ${maxChars} 字符，当前画像已超出：${cur} 字符！⚠ 本次必须整体压缩到 ${maxChars} 字符以内：合并同类段落、删除过程性描述、低价值细节与冗余示例，只保留最稳定、最高信息密度的内容。超出即视为不合格输出。`;
+  }
+  if (cur > maxChars * 0.8) {
+    return `\n\n【字数上限（硬性要求）】预算 ${maxChars} 字符，当前 ${cur} 字符（已用 ${Math.round((cur / maxChars) * 100)}%）。⚠ 接近上限：写入新内容前必须先合并压缩既有段落，画像总长度不得超过 ${maxChars} 字符。`;
+  }
+  if (cur > 0) {
+    return `\n\n【字数上限（硬性要求）】画像总长度不得超过 ${maxChars} 字符，当前 ${cur} 字符（余量 ${maxChars - cur}）。每条写入前自检：能否用更少的字表达？能否并入已有段落？超出即视为不合格输出。`;
+  }
+  return `\n\n【字数上限（硬性要求）】画像总长度不得超过 ${maxChars} 字符，超出即视为不合格输出。请凝练为最终形态，删除过程性描述与冗余示例。`;
+}
+
+/**
+ * 画像更新门控分类（5 类严格优先级语义，用 memory_llm 执行）：
+ * 判断本批新记忆相对当前画像的变更级别，immediate 三类才值得立即重写画像。
+ */
+export const PROFILE_GATE_SYSTEM_PROMPT = `你是画像更新门控分类器。对比【新增/变化的记忆】与【当前画像】，按严格优先级输出恰好一个标签（只输出标签单词，无任何其他内容）。
+
+- conflict：任一记忆否定/取代了当前画像仍在断言的事实或原则。
+- boundary_change：任一记忆持久改变当前画像中某条规则的适用范围（新声明的限制或扩展属此类，不算 new_rule）。
+- new_rule：任一记忆新增了当前画像不含、且不属于既有规则范围变化的独立长期规则。
+- reinforcement：记忆仅支持/复述当前画像已有内容（含画像已同步过的"旧→新"历史叙述——复述历史不算 conflict）。
+- none：记忆不含任何画像级的持久信息（一次性操作、琐碎事件等）。
+
+优先级 conflict > boundary_change > new_rule > reinforcement > none。历史陈述只是语境，本身不构成当前信念；不得让复述性/无关记忆压过真正的高优先级变更。`;
+
+export const PROFILE_GATE_LABELS = ["conflict", "boundary_change", "new_rule", "reinforcement", "none"] as const;
+export type ProfileGateLabel = (typeof PROFILE_GATE_LABELS)[number];
+/** 触发立即凝练的标签。 */
+const PROFILE_GATE_IMMEDIATE = new Set<ProfileGateLabel>(["conflict", "boundary_change", "new_rule"]);
+
+export function isProfileGateImmediate(label: ProfileGateLabel): boolean {
+  return PROFILE_GATE_IMMEDIATE.has(label);
+}
+
+export function formatProfileGatePrompt(params: {
+  existingProfile: string;
+  changedMemories: { kind: string; content: string }[];
+}): string {
+  const memText = params.changedMemories.map((m) => `- [${m.kind}] ${m.content}`).join("\n");
+  return `【当前画像】\n\n${params.existingProfile || "（空）"}\n\n【新增/变化的记忆】\n\n${memText}\n\n请输出分类标签。`;
 }

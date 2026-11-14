@@ -1,1 +1,0 @@
-ALTER TABLE `agents` RENAME COLUMN `mcp_config` TO `body`;

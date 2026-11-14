@@ -1,5 +1,5 @@
 /**
- * FTS5 分词预处理（DESIGN §2.7 / PLAN 风险项）。
+ * FTS5 分词预处理。
  *
  * node:sqlite 的 unicode61 分词器不切中文：整段 CJK 会成为一个 token，命中率暴跌。
  * 方案：索引与查询两侧统一做「CJK 二元组 + 拉丁词」预切分，用空格连接后交给 FTS5。
@@ -9,7 +9,7 @@ const CJK_RUN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+/g;
 const LATIN = /[a-zA-Z0-9_]+/g;
 
 /**
- * 中文停用词（token 级精确匹配，参考 tdai ZH_STOP_WORDS）。
+ * 中文停用词（token 级精确匹配）。
  *
  * 仅收录纯语法字与寒暄/填充 bigram，用于查询侧过滤低信息量输入
  * （"好的""是啊"等），避免这类语句产生噪音召回。
@@ -33,7 +33,6 @@ export function tokenizeForFts(text: string): string {
   if (!text) return "";
   const tokens: string[] = [];
 
-  // 拉丁词
   for (const m of text.matchAll(LATIN)) tokens.push(m[0].toLowerCase());
 
   // CJK 二元组（重叠）
@@ -55,15 +54,6 @@ export function buildFtsQuery(text: string): string {
     .filter((t) => t && !ZH_STOP_TOKENS.has(t))
     .slice(0, 64);
   if (!toks.length) return "";
-  // 去重
   const uniq = [...new Set(toks)];
   return uniq.map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
-}
-
-/**
- * 判断文本经停用词过滤后是否仍有有效检索 token。
- * 用于召回侧短路：纯寒暄/语法字（"好的"）返回 false，跳过检索避免噪音。
- */
-export function hasMeaningfulQuery(text: string): boolean {
-  return buildFtsQuery(text) !== "";
 }
